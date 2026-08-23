@@ -136,9 +136,7 @@ export const getDisplayFormats = ({
     .sort(sortAudioFormatsByQuality)
 
   return {
-    videoFormats:
-      videoFormats.length > 0 || type !== 'video' ? videoFormats : [buildFallbackFormat('video')],
-    audioFormats:
-      audioFormats.length > 0 || type !== 'audio' ? audioFormats : [buildFallbackFormat('audio')]
+    videoFormats,
+    audioFormats: audioFormats.length > 0 ? audioFormats : [buildFallbackFormat('audio')]
   }
 }
