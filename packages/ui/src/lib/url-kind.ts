@@ -12,6 +12,19 @@ const YOUTUBE_CHANNEL_PATH = /^\/(@[^/]+|channel\/|user\/|c\/)/i
 export const isPlaylistLikeUrl = (value: string): boolean => {
   try {
     const parsed = new URL(value)
+    const host = parsed.hostname.toLowerCase()
+    const pathname = parsed.pathname.toLowerCase()
+    const isYouTubeHost = YOUTUBE_HOSTS.some(
+      (suffix) => host === suffix || host.endsWith(`.${suffix}`)
+    )
+
+    // A YouTube watch URL may include a `list` parameter for navigation context.
+    // It still represents the selected video, rather than a request to preview
+    // or download the entire playlist.
+    if (isYouTubeHost && pathname === '/watch' && parsed.searchParams.get('v')?.trim()) {
+      return false
+    }
+
     const playlistQueryKeys = ['collection', 'list', 'playlist', 'set']
     if (
       playlistQueryKeys.some((key) => {
@@ -21,15 +34,10 @@ export const isPlaylistLikeUrl = (value: string): boolean => {
       return true
     }
 
-    const host = parsed.hostname.toLowerCase()
-    const isYouTubeHost = YOUTUBE_HOSTS.some(
-      (suffix) => host === suffix || host.endsWith(`.${suffix}`)
-    )
     if (isYouTubeHost && YOUTUBE_CHANNEL_PATH.test(parsed.pathname)) {
       return true
     }
 
-    const pathname = parsed.pathname.toLowerCase()
     return ['/playlist', '/playlists/', '/collection/', '/collections/', '/sets/'].some((token) =>
       pathname.includes(token)
     )

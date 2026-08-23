@@ -11,6 +11,30 @@ interface DisplayFormatsResult {
   audioFormats: VideoFormat[]
 }
 
+const buildFallbackFormat = (type: 'video' | 'audio'): VideoFormat => {
+  if (type === 'audio') {
+    return {
+      format_id: 'bestaudio',
+      ext: 'm4a',
+      acodec: 'best',
+      vcodec: 'none',
+      video_ext: 'none',
+      audio_ext: 'm4a',
+      format_note: 'Best audio'
+    }
+  }
+
+  return {
+    format_id: 'best',
+    ext: 'mp4',
+    acodec: 'best',
+    vcodec: 'best',
+    video_ext: 'mp4',
+    audio_ext: 'best',
+    format_note: 'Best'
+  }
+}
+
 /**
  * Return the formats that should stay visible in the picker.
  *
@@ -86,8 +110,11 @@ export const getDisplayFormats = ({
 
   if (type !== 'audio' || codec !== 'auto') {
     return {
-      videoFormats,
-      audioFormats: [...audios].sort(sortAudioFormatsByQuality)
+      videoFormats: videoFormats.length > 0 || type !== 'video' ? videoFormats : [buildFallbackFormat('video')],
+      audioFormats:
+        audios.length > 0 || type !== 'audio'
+          ? [...audios].sort(sortAudioFormatsByQuality)
+          : [buildFallbackFormat('audio')]
     }
   }
 
@@ -107,5 +134,9 @@ export const getDisplayFormats = ({
     .map((group) => group.sort(sortAudioFormatsByQuality)[0])
     .sort(sortAudioFormatsByQuality)
 
-  return { videoFormats, audioFormats }
+  return {
+    videoFormats: videoFormats.length > 0 || type !== 'video' ? videoFormats : [buildFallbackFormat('video')],
+    audioFormats:
+      audioFormats.length > 0 || type !== 'audio' ? audioFormats : [buildFallbackFormat('audio')]
+  }
 }
