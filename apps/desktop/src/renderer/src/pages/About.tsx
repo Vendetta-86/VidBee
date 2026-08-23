@@ -369,7 +369,7 @@ export function About() {
                   aria-label={t('about.autoUpdateTitle')}
                   checked={settings.autoUpdate}
                   label=""
-                  onToggle={handleToggleAutoUpdate}
+                  onToggle={() => handleToggleAutoUpdate(!settings.autoUpdate)}
                 />
               </div>
               <DownloadEngineRow status={kernelStatus} />
