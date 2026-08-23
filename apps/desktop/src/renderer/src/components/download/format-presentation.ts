@@ -110,10 +110,7 @@ export const getDisplayFormats = ({
 
   if (type !== 'audio' || codec !== 'auto') {
     return {
-      videoFormats:
-        videoFormats.length > 0 || type !== 'video'
-          ? videoFormats
-          : [buildFallbackFormat('video')],
+      videoFormats: videoFormats.length > 0 || type !== 'video' ? videoFormats : [buildFallbackFormat('video')],
       audioFormats:
         audios.length > 0 || type !== 'audio'
           ? [...audios].sort(sortAudioFormatsByQuality)
@@ -138,10 +135,7 @@ export const getDisplayFormats = ({
     .sort(sortAudioFormatsByQuality)
 
   return {
-    videoFormats:
-      videoFormats.length > 0 || type !== 'video'
-        ? videoFormats
-        : [buildFallbackFormat('video')],
+    videoFormats: videoFormats.length > 0 || type !== 'video' ? videoFormats : [buildFallbackFormat('video')],
     audioFormats:
       audioFormats.length > 0 || type !== 'audio' ? audioFormats : [buildFallbackFormat('audio')]
   }
