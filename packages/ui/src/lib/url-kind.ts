@@ -18,10 +18,15 @@ export const isPlaylistLikeUrl = (value: string): boolean => {
       (suffix) => host === suffix || host.endsWith(`.${suffix}`)
     )
 
-    // A YouTube watch URL may include a `list` parameter for navigation context.
+    // A YouTube video URL may include a `list` parameter for navigation context.
     // It still represents the selected video, rather than a request to preview
-    // or download the entire playlist.
-    if (isYouTubeHost && pathname === '/watch' && parsed.searchParams.get('v')?.trim()) {
+    // or download the entire playlist. This includes short youtu.be links,
+    // which place the video ID in the path instead of the `v` parameter.
+    const hasYouTubeVideoId =
+      (pathname === '/watch' && Boolean(parsed.searchParams.get('v')?.trim())) ||
+      /^\/(?:shorts|live|embed)\/[^/]+$/.test(pathname) ||
+      (host === 'youtu.be' && /^\/[^/]+$/.test(pathname))
+    if (isYouTubeHost && hasYouTubeVideoId) {
       return false
     }
 
