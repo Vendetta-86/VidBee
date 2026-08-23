@@ -169,7 +169,10 @@ export const fetchVideoInfoWithCommand = async (url: string): Promise<VideoInfoC
       const err = stderr.get()
       if (code === 0 && out) {
         try {
-          const info = normalizeVideoInfo(parseVideoInfoPayload(out) as RawVideoInfoWithFallbacks, url)
+          const info = normalizeVideoInfo(
+            parseVideoInfoPayload(out) as RawVideoInfoWithFallbacks,
+            url
+          )
           if (hasFormats(info)) {
             resolve({ info, ytDlpCommand })
             return
