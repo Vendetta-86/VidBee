@@ -70,7 +70,7 @@ export const defaultWebSettings: WebAppSettings = {
 	oneClickQuality: "best",
 	oneClickContainer: "auto",
 	closeToTray: true,
-	autoUpdate: true,
+	autoUpdate: false,
 	subscriptionOnlyLatestDefault: true,
 	enableAnalytics: true,
 	embedSubs: true,

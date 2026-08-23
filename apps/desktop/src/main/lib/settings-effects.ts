@@ -7,6 +7,7 @@ interface SettingSideEffectHandlers {
   onMaxConcurrentDownloads: (value: number) => void
   onMaxConcurrentTranscriptions: (value: number) => void
   onBetaProgram: (value: boolean) => void
+  onAutoUpdate: (value: boolean) => void
 }
 
 /**
@@ -44,6 +45,11 @@ export const applySingleSettingSideEffects = <K extends keyof AppSettings>(
 
   if (key === 'betaProgram') {
     handlers.onBetaProgram(Boolean(value))
+    return
+  }
+
+  if (key === 'autoUpdate') {
+    handlers.onAutoUpdate(Boolean(value))
   }
 }
 

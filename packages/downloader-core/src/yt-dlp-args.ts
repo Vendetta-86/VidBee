@@ -39,10 +39,6 @@ export interface YtDlpDownloadOptions {
 }
 
 const YOUTUBE_HOST_SUFFIXES = ['youtube.com', 'youtu.be', 'youtube-nocookie.com'] as const
-// GitHub issue #359: drop only the bare `web` client (which requires a PO
-// token and frequently 403s) but keep `web_safari` and the other defaults so
-// extraction has more fallbacks before failing.
-const YOUTUBE_SAFE_PLAYER_CLIENTS = 'default,-web'
 const SUBTITLE_LANGUAGE_SELECTOR = 'all,-live_chat,-rechat'
 export const VIDBEE_OUTPUT_PATH_PREFIX = '__VIDBEE_OUTPUT_PATH__:'
 const WINDOWS_FILENAME_TRIM_LENGTH = '120'
@@ -271,7 +267,10 @@ export const appendYouTubeSafeExtractorArgs = (args: string[], url: string): voi
   if (!isYouTubeUrl(url)) {
     return
   }
-  args.push('--extractor-args', `youtube:player_client=${YOUTUBE_SAFE_PLAYER_CLIENTS}`)
+  // Let current yt-dlp choose its default YouTube clients. The former
+  // exclusions could leave single-video metadata without a viable player
+  // while flat playlist listing still succeeded.
+  args.push('--extractor-args', 'youtube:player_client=default')
 }
 
 export const formatYtDlpCommand = (args: string[]): string => {

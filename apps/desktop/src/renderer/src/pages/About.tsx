@@ -131,6 +131,10 @@ export function About() {
     void saveSetting({ key: 'betaProgram', value: checked })
   }
 
+  const handleToggleAutoUpdate = (checked: boolean) => {
+    void saveSetting({ key: 'autoUpdate', value: checked })
+  }
+
   const handleCheckForUpdates = async () => {
     try {
       toast.info(t('about.notifications.checkingUpdates'))
@@ -363,10 +367,9 @@ export function About() {
                 </div>
                 <Switch
                   aria-label={t('about.autoUpdateTitle')}
-                  checked
-                  disabled
+                  checked={settings.autoUpdate}
                   label=""
-                  onToggle={() => undefined}
+                  onToggle={handleToggleAutoUpdate}
                 />
               </div>
               <DownloadEngineRow status={kernelStatus} />

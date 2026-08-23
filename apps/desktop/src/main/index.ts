@@ -803,8 +803,9 @@ function initAutoUpdater(): void {
 
     log.transports.file.level = 'info'
     autoUpdater.logger = log
-    autoUpdater.autoDownload = true
-    autoUpdater.autoInstallOnAppQuit = true
+    const autoUpdateEnabled = settingsManager.get('autoUpdate')
+    autoUpdater.autoDownload = autoUpdateEnabled
+    autoUpdater.autoInstallOnAppQuit = autoUpdateEnabled
 
     autoUpdater.on('update-available', (info) => {
       log.info('Update available:', info.version)
@@ -812,7 +813,11 @@ function initAutoUpdater(): void {
         version: info.version
       })
       sendToRenderer('update:available', info)
-      log.info('Automatic updates are required, update will download in the background')
+      log.info(
+        autoUpdateEnabled
+          ? 'Automatic updates are enabled; the update will download in the background'
+          : 'Automatic updates are disabled; waiting for a manual download'
+      )
     })
 
     autoUpdater.on('update-not-available', (info) => {
@@ -844,12 +849,14 @@ function initAutoUpdater(): void {
     })
 
     log.info('Auto-updater initialized successfully')
-    log.info('Automatic updates are required, checking for updates immediately...')
     // Select stable/preview channel from the user's preview-program setting before checking.
     applyUpdateChannel(settingsManager.get('betaProgram'))
-    // Use checkForUpdates instead of checkForUpdatesAndNotify
-    // because we have our own notification system and want to ensure immediate download
-    void autoUpdater.checkForUpdates()
+    if (autoUpdateEnabled) {
+      log.info('Automatic updates are enabled; checking for updates immediately...')
+      void autoUpdater.checkForUpdates()
+    } else {
+      log.info('Automatic updates are disabled; skipping startup update check')
+    }
   } catch (error) {
     log.error('Failed to initialize auto-updater:', error)
     captureMainException(error, {

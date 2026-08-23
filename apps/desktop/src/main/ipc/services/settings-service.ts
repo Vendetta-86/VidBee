@@ -1,4 +1,5 @@
 import { type IpcContext, IpcMethod, IpcService } from 'electron-ipc-decorator'
+import { autoUpdater } from 'electron-updater'
 import type { AppSettings } from '../../../shared/types'
 import {
   applyBatchSettingSideEffects,
@@ -29,6 +30,10 @@ const settingSideEffectHandlers = {
   },
   onBetaProgram: (value: boolean) => {
     refreshUpdateChannel(value)
+  },
+  onAutoUpdate: (value: boolean) => {
+    autoUpdater.autoDownload = value
+    autoUpdater.autoInstallOnAppQuit = value
   }
 }
 
@@ -64,6 +69,9 @@ class SettingsService extends IpcService {
     applyAutoLaunchSetting(settingsManager.get('launchAtLogin'))
     applyDesktopQueueConcurrency()
     applyUpdateChannel(settingsManager.get('betaProgram'))
+    const autoUpdateEnabled = settingsManager.get('autoUpdate')
+    autoUpdater.autoDownload = autoUpdateEnabled
+    autoUpdater.autoInstallOnAppQuit = autoUpdateEnabled
   }
 
   /**

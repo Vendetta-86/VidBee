@@ -377,7 +377,7 @@ export const defaultSettings: AppSettings = {
   closeToTray: true,
   hideDockIcon: false,
   launchAtLogin: false,
-  autoUpdate: true,
+  autoUpdate: false,
   subscriptionOnlyLatestDefault: true,
   enableAnalytics: true,
   enableDownloadNotifications: true,

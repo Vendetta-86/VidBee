@@ -1,5 +1,5 @@
 const YOUTUBE_HOST_SUFFIXES = ['youtube.com', 'youtu.be', 'youtube-nocookie.com'] as const
-const YOUTUBE_SAFE_PLAYER_CLIENTS = 'default,-web,-web_safari'
+const YOUTUBE_SAFE_PLAYER_CLIENTS = 'default'
 
 const hasYouTubeHost = (host: string): boolean =>
   YOUTUBE_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`))
