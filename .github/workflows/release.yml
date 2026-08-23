@@ -6,6 +6,9 @@ on:
       - v*.*.*
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 # Never run two releases for the same ref at once, and never cancel an in-progress
 # release (cancelling mid-publish could leave a half-uploaded GitHub release).
 concurrency:
@@ -63,7 +66,7 @@ jobs:
             dist/*.yml
             dist/*.blockmap
         env:
-          GITHUB_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Notify Cloudflare Pages
         if: steps.release_meta.outputs.is_preview != 'true'
