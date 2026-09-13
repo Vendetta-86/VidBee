@@ -20,24 +20,25 @@ export function getYtDlpReleaseAssetName(platform: string): string {
 }
 
 /**
- * Return the official Deno release archive name for a supported target.
+ * Compare yt-dlp versions such as `2026.06.09` and `2026.08.19.020253`.
+ * Returns negative when `left` is older, zero when equal, and positive when newer.
  */
-export function getDenoReleaseAssetName(platform: string, arch: string): string {
-  if (!['win32', 'darwin', 'linux'].includes(platform)) {
-    throw new Error(`Unsupported platform: ${platform}`)
+export function compareYtDlpVersions(left: string, right: string): number {
+  const parseParts = (version: string): number[] =>
+    version.split('.').map((part) => {
+      const value = Number.parseInt(part, 10)
+      return Number.isFinite(value) ? value : 0
+    })
+  const leftParts = parseParts(left)
+  const rightParts = parseParts(right)
+  const length = Math.max(leftParts.length, rightParts.length)
+  for (let index = 0; index < length; index += 1) {
+    const diff = (leftParts[index] ?? 0) - (rightParts[index] ?? 0)
+    if (diff !== 0) {
+      return diff
+    }
   }
-  if (!['x64', 'arm64'].includes(arch)) {
-    throw new Error(`Unsupported architecture: ${arch}`)
-  }
-
-  const targetArch = arch === 'arm64' ? 'aarch64' : 'x86_64'
-  const targetPlatform =
-    platform === 'win32'
-      ? 'pc-windows-msvc'
-      : platform === 'darwin'
-        ? 'apple-darwin'
-        : 'unknown-linux-gnu'
-  return `deno-${targetArch}-${targetPlatform}.zip`
+  return 0
 }
 
 /**

@@ -3,7 +3,7 @@ export const FILENAME_STYLES = ['classic', 'basic', 'pretty', 'nerdy'] as const
 export type FilenameStyle = (typeof FILENAME_STYLES)[number]
 
 export const DEFAULT_FILENAME_STYLE: FilenameStyle = 'pretty'
-export const DEFAULT_FILENAME_VIA_VIDBEE = true
+export const DEFAULT_FILENAME_VIA_VIDBEE = false
 
 export const VIA_VIDBEE_LABEL = 'via VidBee'
 export const DEFAULT_FILENAME_TEMPLATE = '%(title)s.%(ext)s'
@@ -27,8 +27,8 @@ const FILENAME_STYLE_TEMPLATES: Record<FilenameStyle, { audio: string; video: st
     video: `%(title)s - ${AUTHOR_FIELD} (%(height)sp, %(vcodec)s, %(extractor)s, %(id)s).%(ext)s`
   },
   pretty: {
-    audio: `%(title)s - ${AUTHOR_FIELD} (%(extractor)s).%(ext)s`,
-    video: `%(title)s - ${AUTHOR_FIELD} (%(height)sp, %(vcodec)s, %(extractor)s).%(ext)s`
+    audio: DEFAULT_FILENAME_TEMPLATE,
+    video: DEFAULT_FILENAME_TEMPLATE
   }
 }
 
@@ -46,8 +46,8 @@ export const FILENAME_STYLE_PREVIEWS: Record<FilenameStyle, { audio: string; vid
     video: 'Video Title - Video Author (1080p, h264, youtube, dQw4w9WgXcQ).mp4'
   },
   pretty: {
-    audio: 'Audio Title - Audio Author (youtube).mp3',
-    video: 'Video Title - Video Author (1080p, h264, youtube).mp4'
+    audio: 'Audio Title.mp3',
+    video: 'Video Title.mp4'
   }
 }
 
@@ -95,7 +95,7 @@ export const applyViaVidBeeFilename = (
  *
  * Custom caller templates still win. Share-watermark mode always uses the
  * branded title template. An unset style uses pretty. An unset via VidBee
- * flag defaults to on.
+ * flag defaults to off.
  *
  * @param style Saved filename style, or undefined for the pretty default.
  * @param type Video or audio download.

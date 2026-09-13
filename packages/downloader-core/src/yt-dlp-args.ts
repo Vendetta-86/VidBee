@@ -8,6 +8,7 @@ import {
   resolveFilenameTemplate
 } from './filename-style'
 import type { OneClickContainerOption } from './format-preferences'
+import { resolveSubtitleLanguages } from './subtitle-languages'
 
 export interface YtDlpDownloadSettings {
   downloadPath?: string
@@ -15,6 +16,9 @@ export interface YtDlpDownloadSettings {
   cookiesPath?: string
   proxy?: string
   configPath?: string
+  downloadSubtitles?: boolean
+  subtitleLanguages?: string[]
+  interfaceLanguage?: string
   embedSubs?: boolean
   writeAutoSubs?: boolean
   embedThumbnail?: boolean
@@ -39,7 +43,7 @@ export interface YtDlpDownloadOptions {
 }
 
 const YOUTUBE_HOST_SUFFIXES = ['youtube.com', 'youtu.be', 'youtube-nocookie.com'] as const
-const SUBTITLE_LANGUAGE_SELECTOR = 'all,-live_chat,-rechat'
+const YOUTUBE_SAFE_PLAYER_CLIENTS = 'default'
 export const VIDBEE_OUTPUT_PATH_PREFIX = '__VIDBEE_OUTPUT_PATH__:'
 const WINDOWS_FILENAME_TRIM_LENGTH = '120'
 const DIRECT_MEDIA_SEGMENT_EXTENSION = /\.(?:cmfa|cmfv|m4s)(?:$|[?#])/i
@@ -50,21 +54,87 @@ const DIRECT_MEDIA_SEGMENT_EXTENSION = /\.(?:cmfa|cmfv|m4s)(?:$|[?#])/i
 // single transient failure does not abort the whole download.
 const DEFAULT_RETRIES = '30'
 const DEFAULT_FRAGMENT_RETRIES = '30'
+const DEFAULT_EXTRACTOR_RETRIES = '10'
 const DEFAULT_RETRY_SLEEP = '2'
 const DEFAULT_SOCKET_TIMEOUT = '30'
 
 const appendNetworkResilienceArgs = (args: string[]): void => {
   args.push('--retries', DEFAULT_RETRIES)
   args.push('--fragment-retries', DEFAULT_FRAGMENT_RETRIES)
+  args.push('--extractor-retries', DEFAULT_EXTRACTOR_RETRIES)
   args.push('--retry-sleep', DEFAULT_RETRY_SLEEP)
+  args.push('--retry-sleep', `extractor:${DEFAULT_RETRY_SLEEP}`)
   args.push('--socket-timeout', DEFAULT_SOCKET_TIMEOUT)
 }
 
 /** Add bounded retries to metadata probes without fragment-only flags. */
 const appendMetadataNetworkResilienceArgs = (args: string[]): void => {
   args.push('--retries', DEFAULT_RETRIES)
+  args.push('--extractor-retries', DEFAULT_EXTRACTOR_RETRIES)
   args.push('--retry-sleep', DEFAULT_RETRY_SLEEP)
+  args.push('--retry-sleep', `extractor:${DEFAULT_RETRY_SLEEP}`)
   args.push('--socket-timeout', DEFAULT_SOCKET_TIMEOUT)
+}
+
+export const METADATA_NETWORK_ATTEMPTS = 3
+export const METADATA_NETWORK_RETRY_DELAY_MS = 1000
+
+/**
+ * Return whether a yt-dlp failure is a truncated or timed-out HTTP read.
+ *
+ * Extractor webpage/JSON reads do not honor `--retries`. IncompleteRead and
+ * read timeouts therefore fail a `-j` probe unless the whole process is retried.
+ */
+export const isTransientYtDlpNetworkError = (error: string): boolean => {
+  const normalized = error.toLowerCase()
+  return (
+    normalized.includes('incompleteread') ||
+    normalized.includes('error reading response') ||
+    normalized.includes('read timed out') ||
+    normalized.includes('connection reset') ||
+    normalized.includes('connection aborted') ||
+    normalized.includes('econnreset') ||
+    normalized.includes('econnaborted')
+  )
+}
+
+/**
+ * Return a string message from an unknown thrown value.
+ */
+const networkErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error)
+
+/**
+ * Sleep for the metadata retry backoff.
+ */
+const delayMetadataRetry = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+
+/**
+ * Retry a yt-dlp metadata probe when the site truncates or times out the HTTP body.
+ */
+export const retryTransientYtDlpNetworkError = async <T>(
+  run: () => Promise<T>,
+  sleep: (ms: number) => Promise<void> = delayMetadataRetry
+): Promise<T> => {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= METADATA_NETWORK_ATTEMPTS; attempt += 1) {
+    try {
+      return await run()
+    } catch (error) {
+      lastError = error
+      const canRetry =
+        attempt < METADATA_NETWORK_ATTEMPTS &&
+        isTransientYtDlpNetworkError(networkErrorMessage(error))
+      if (!canRetry) {
+        throw error
+      }
+      await sleep(METADATA_NETWORK_RETRY_DELAY_MS)
+    }
+  }
+  throw lastError
 }
 
 const hasYouTubeHost = (host: string): boolean =>
@@ -270,7 +340,7 @@ export const appendYouTubeSafeExtractorArgs = (args: string[], url: string): voi
   // Let current yt-dlp choose its default YouTube clients. The former
   // exclusions could leave single-video metadata without a viable player
   // while flat playlist listing still succeeded.
-  args.push('--extractor-args', 'youtube:player_client=default')
+  args.push('--extractor-args', `youtube:player_client=${YOUTUBE_SAFE_PLAYER_CLIENTS}`)
 }
 
 export const formatYtDlpCommand = (args: string[]): string => {
@@ -396,6 +466,11 @@ export const buildDownloadArgs = (
     args.push('--download-sections', `*${start}-${end}`)
   }
 
+  const downloadSubtitles = settings.downloadSubtitles ?? true
+  const subtitleLanguages = resolveSubtitleLanguages(
+    settings.subtitleLanguages,
+    settings.interfaceLanguage
+  )
   const embedSubs = settings.embedSubs ?? true
   const writeAutoSubs = settings.writeAutoSubs ?? true
   const embedThumbnail = settings.embedThumbnail ?? false
@@ -409,7 +484,10 @@ export const buildDownloadArgs = (
   // GitHub issue #370: Twitch `rechat` 404s abort the VOD. GitHub issue #196:
   // Bilibili subtitle fetch without cookies can fail and abort the video.
   // Skip forced subtitle downloads on those sites unless cookies are present.
-  const shouldAttemptSubtitles = !(isBilibili || isTwitchUrl(options.url)) || hasSubtitleAuth
+  const shouldAttemptSubtitles =
+    options.type === 'video' &&
+    downloadSubtitles &&
+    (!(isBilibili || isTwitchUrl(options.url)) || hasSubtitleAuth)
   // GitHub issues #129, #196, #199, #291, #347: Bilibili lists danmaku as a
   // subtitle track (`danmaku.xml`). ffmpeg cannot mux XML into MP4/MKV and
   // aborts with `Invalid data found when processing input` after the video
@@ -417,13 +495,16 @@ export const buildDownloadArgs = (
   const shouldEmbedSubs = embedSubs && shouldAttemptSubtitles && !isBilibili
 
   if (shouldAttemptSubtitles) {
-    args.push('--sub-langs', SUBTITLE_LANGUAGE_SELECTOR)
+    args.push('--sub-langs', subtitleLanguages.join(','))
+    args.push('--sleep-subtitles', '1')
     // `--embed-subs` only writes official / creator-uploaded captions.
     // YouTube videos often have automatic captions and no official track, so
     // also request those when the setting is on; otherwise the embed step
     // has nothing to mux.
     if (writeAutoSubs) {
       args.push('--write-auto-subs')
+    } else {
+      args.push('--no-write-auto-subs')
     }
     if (shouldEmbedSubs) {
       args.push('--embed-subs')
@@ -432,7 +513,7 @@ export const buildDownloadArgs = (
       args.push('--no-embed-subs')
     }
   } else {
-    args.push('--no-embed-subs')
+    args.push('--no-write-subs', '--no-write-auto-subs', '--no-embed-subs')
   }
 
   args.push(embedThumbnail ? '--embed-thumbnail' : '--no-embed-thumbnail')

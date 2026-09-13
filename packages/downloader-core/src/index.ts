@@ -7,6 +7,7 @@ export {
 export { downloaderContract } from './contract'
 export {
   getBrowserCookieDatabaseName,
+  getBrowserCookieDatabaseRelativeSegments,
   getBrowserProfileBaseDirs,
   getBrowserProfileCandidates
 } from './cookie-browser-paths'
@@ -37,6 +38,7 @@ export {
   isWindowsBlockedCookieBrowser,
   listSelectableCookieBrowsers,
   looksLikeNetscapeCookies,
+  MACOS_BROWSER_COOKIE_PERMISSION_MESSAGE,
   recommendCookieSetup,
   unconfiguredCookieHealth
 } from './cookie-setup'
@@ -99,14 +101,25 @@ export {
   buildVideoInfoArgs,
   formatYtDlpCommand,
   isDirectMediaSegmentUrl,
+  isTransientYtDlpNetworkError,
+  METADATA_NETWORK_ATTEMPTS,
   parseDownloadTimecode,
   resolveAudioFormatSelector,
   resolveFfmpegLocationFromPath,
   resolvePathWithHome,
   resolveVideoFormatSelector,
+  retryTransientYtDlpNetworkError,
   sanitizeFilenameTemplate,
   VIDBEE_OUTPUT_PATH_PREFIX,
   validateDownloadTimeRange
 } from './yt-dlp-args'
+export {
+  DEFAULT_SUBTITLE_LANGUAGES,
+  FOLLOW_INTERFACE_SUBTITLE_LANGUAGE,
+  interfaceSubtitleLanguage,
+  MAX_SUBTITLE_LANGUAGES,
+  normalizeSubtitleLanguages,
+  resolveSubtitleLanguages
+} from './subtitle-languages'
 export type { YtDlpExecutorOptions, YtDlpTaskOptions } from './yt-dlp-executor'
 export { YtDlpExecutor } from './yt-dlp-executor'

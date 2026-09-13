@@ -1,5 +1,6 @@
 import type { FilenameStyle } from '@vidbee/downloader-core/filename-style'
 import type { OneClickContainerOption } from '@vidbee/downloader-core/format-preferences'
+import { DEFAULT_SUBTITLE_LANGUAGES } from '@vidbee/downloader-core/subtitle-languages'
 import { defaultLanguageCode, type LanguageCode } from '@vidbee/i18n/languages'
 import type { AsrTierId } from '@vidbee/transcription/asr'
 import type { DownloadMirror } from '@vidbee/transcription/download-mirrors'
@@ -49,6 +50,7 @@ export interface VideoInfoCommandResult {
   info?: VideoInfo
   ytDlpCommand: string
   error?: string
+  cookiesIgnored?: boolean
 }
 
 export interface DownloadProgress {
@@ -198,6 +200,7 @@ export interface DownloadOptions {
   viewCount?: number
   duration?: number
   selectedFormat?: VideoFormat
+  runtimeSettings?: Partial<Pick<AppSettings, 'browserForCookies' | 'cookiesPath'>>
 }
 
 export interface PlaylistEntry {
@@ -341,6 +344,8 @@ export interface AppSettings {
   enableDownloadNotifications: boolean
   rememberLastAudioLanguage: boolean
   preferredAudioLanguage: string
+  downloadSubtitles: boolean
+  subtitleLanguages: string[]
   embedSubs: boolean
   writeAutoSubs: boolean
   embedThumbnail: boolean
@@ -383,13 +388,15 @@ export const defaultSettings: AppSettings = {
   enableDownloadNotifications: true,
   rememberLastAudioLanguage: true,
   preferredAudioLanguage: '',
+  downloadSubtitles: true,
+  subtitleLanguages: [...DEFAULT_SUBTITLE_LANGUAGES],
   embedSubs: true,
   writeAutoSubs: true,
   embedThumbnail: false,
   embedMetadata: true,
   embedChapters: true,
   filenameStyle: 'pretty',
-  filenameViaVidBee: true,
+  filenameViaVidBee: false,
   shareWatermark: false,
   autoTranscribeAfterDownload: true,
   maxConcurrentTranscriptions: 1,

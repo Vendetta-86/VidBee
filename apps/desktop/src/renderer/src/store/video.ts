@@ -17,6 +17,9 @@ export const videoInfoErrorAtom = atom<string | null>(null)
 
 // Last yt-dlp command used for video info
 export const videoInfoCommandAtom = atom<string | null>(null)
+
+// True when video info succeeded only after retrying without configured cookies
+export const videoInfoCookiesIgnoredAtom = atom<boolean>(false)
 const videoInfoRequestCoordinator = createVideoInfoRequestCoordinator()
 
 // Fetch video info
@@ -25,6 +28,7 @@ export const fetchVideoInfoAtom = atom(null, async (_get, set, url: string) => {
   set(videoInfoLoadingAtom, true)
   set(videoInfoErrorAtom, null)
   set(videoInfoCommandAtom, null)
+  set(videoInfoCookiesIgnoredAtom, false)
   set(currentVideoInfoAtom, null)
   set(currentVideoInfoSourceUrlAtom, null)
 
@@ -34,6 +38,7 @@ export const fetchVideoInfoAtom = atom(null, async (_get, set, url: string) => {
       return
     }
     set(videoInfoCommandAtom, result.ytDlpCommand)
+    set(videoInfoCookiesIgnoredAtom, result.cookiesIgnored === true)
     if (result.info) {
       set(currentVideoInfoAtom, result.info)
       set(currentVideoInfoSourceUrlAtom, url)
@@ -61,4 +66,5 @@ export const clearVideoInfoAtom = atom(null, (_get, set) => {
   set(videoInfoLoadingAtom, false)
   set(videoInfoErrorAtom, null)
   set(videoInfoCommandAtom, null)
+  set(videoInfoCookiesIgnoredAtom, false)
 })

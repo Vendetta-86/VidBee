@@ -20,7 +20,8 @@ import {
   buildDownloadArgs,
   buildPlaylistInfoArgs,
   buildVideoInfoArgs,
-  formatYtDlpCommand
+  formatYtDlpCommand,
+  retryTransientYtDlpNetworkError
 } from './yt-dlp-args'
 import { resolveYtDlpWrapCtor } from './yt-dlp-wrap'
 
@@ -291,10 +292,11 @@ const resolveJsRuntimePath = (runtime: string): string | undefined => {
   }
 
   const runtimeCandidates: string[] = []
-  if (runtime === 'deno') {
+  if (runtime === 'node') {
+    const nodeName = process.platform === 'win32' ? 'node.exe' : 'node'
+    runtimeCandidates.push(path.join('node', nodeName), nodeName)
+  } else if (runtime === 'deno') {
     runtimeCandidates.push(process.platform === 'win32' ? 'deno.exe' : 'deno')
-  } else if (runtime === 'node') {
-    runtimeCandidates.push(process.platform === 'win32' ? 'node.exe' : 'node')
   } else if (runtime === 'bun') {
     runtimeCandidates.push(process.platform === 'win32' ? 'bun.exe' : 'bun')
   } else if (runtime === 'quickjs') {
@@ -322,7 +324,7 @@ const resolveJsRuntimePath = (runtime: string): string | undefined => {
 }
 
 const resolveJsRuntimeArgs = (): string[] => {
-  const runtime = (process.env.YTDLP_JS_RUNTIME || 'deno').trim()
+  const runtime = (process.env.YTDLP_JS_RUNTIME || 'node').trim()
   if (!runtime || runtime === 'none') {
     return []
   }
@@ -599,8 +601,10 @@ export class DownloaderCore extends EventEmitter {
       throw new Error('URL is required.')
     }
 
-    const raw = await this.runJsonCommand<RawVideoInfo>(
-      buildVideoInfoArgs(target, this.resolveRuntimeSettings(runtimeSettings), this.jsRuntimeArgs)
+    const raw = await retryTransientYtDlpNetworkError(() =>
+      this.runJsonCommand<RawVideoInfo>(
+        buildVideoInfoArgs(target, this.resolveRuntimeSettings(runtimeSettings), this.jsRuntimeArgs)
+      )
     )
     const formats: VideoFormat[] = (raw.formats ?? []).map((format) => ({
       formatId: format.format_id ?? 'unknown',
@@ -646,11 +650,13 @@ export class DownloaderCore extends EventEmitter {
       throw new Error('URL is required.')
     }
 
-    const raw = await this.runJsonCommand<RawPlaylistInfo>(
-      buildPlaylistInfoArgs(
-        target,
-        this.resolveRuntimeSettings(runtimeSettings),
-        this.jsRuntimeArgs
+    const raw = await retryTransientYtDlpNetworkError(() =>
+      this.runJsonCommand<RawPlaylistInfo>(
+        buildPlaylistInfoArgs(
+          target,
+          this.resolveRuntimeSettings(runtimeSettings),
+          this.jsRuntimeArgs
+        )
       )
     )
 
