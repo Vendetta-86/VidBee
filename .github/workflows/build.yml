@@ -70,7 +70,11 @@ jobs:
         run: pnpm run check && pnpm run typecheck
 
       - name: Verify fork download behavior
-        run: pnpm exec tsx --test packages/downloader-core/src/cookie-setup.test.ts packages/downloader-core/src/filename-style.test.ts apps/desktop/src/renderer/src/store/video-request-coordinator.test.ts
+        run: pnpm --dir packages/subscriptions-core exec tsx --test ../downloader-core/src/cookie-setup.test.ts ../downloader-core/src/filename-style.test.ts ../../apps/desktop/src/renderer/src/store/video-request-coordinator.test.ts
+
+      - name: Verify web types
+        if: matrix.platform == 'linux'
+        run: pnpm --dir apps/web exec tsc --noEmit
 
       - name: Setup macOS signing
         if: matrix.platform == 'macos'
