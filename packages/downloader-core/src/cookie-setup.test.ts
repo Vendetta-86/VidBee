@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { inspectNetscapeCookies } from './cookie-setup'
+import { buildDownloadArgs, buildPlaylistInfoArgs, buildVideoInfoArgs } from './yt-dlp-args'
 
 const cookieFile = (...rows: string[]): string =>
   ['# Netscape HTTP Cookie File', ...rows].join('\n')
@@ -47,4 +48,22 @@ test('HttpOnly exports and other supported sites remain usable', () => {
   )
   assert.equal(health.status, 'ok')
   assert.equal(inspectNetscapeCookies(cookieFile(row('SESSDATA', 0, '.bilibili.com'))).status, 'ok')
+})
+
+test('cookie-free recovery cannot regain cookies during download or metadata preparation', () => {
+  const url = 'https://youtu.be/RIGlCZJR2JQ'
+  const settings = {
+    skipCookieAuth: true,
+    browserForCookies: 'chrome',
+    cookiesPath: 'previous-cookies.txt'
+  }
+  const requests = [
+    buildDownloadArgs({ url, type: 'video' }, 'downloads', settings),
+    buildVideoInfoArgs(url, settings),
+    buildPlaylistInfoArgs(url, settings)
+  ]
+  for (const args of requests) {
+    assert.equal(args.includes('--cookies'), false)
+    assert.equal(args.includes('--cookies-from-browser'), false)
+  }
 })

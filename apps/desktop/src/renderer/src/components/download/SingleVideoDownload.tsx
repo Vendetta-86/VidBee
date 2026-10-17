@@ -20,7 +20,7 @@ import { useTranslation } from 'react-i18next'
 import { settingsAtom } from '../../store/settings'
 import { pickPreferredAudioFormatId } from './audio-format-preferences'
 import { DownloadParseErrorBanner } from './DownloadParseErrorBanner'
-import { getDisplayFormats } from './format-presentation'
+import { filterFormatsByType, getDisplayFormats } from './format-presentation'
 
 export interface SingleVideoState {
   title: string
@@ -74,41 +74,6 @@ const getCodecShortName = (codec?: string): string => {
     return 'Unknown'
   }
   return codec.split('.')[0].toUpperCase()
-}
-
-const isHlsFormat = (format: VideoFormat): boolean =>
-  format.protocol === 'm3u8' || format.protocol === 'm3u8_native'
-
-const isAuthOrCookiesError = (error: string): boolean =>
-  /sign in to confirm|login required|requires (?:cookies|authentication)|cookies are no longer valid|not a bot/i.test(
-    error
-  )
-
-const isHttpProtocol = (format: VideoFormat): boolean =>
-  !!format.protocol && format.protocol.startsWith('http')
-
-const filterFormatsByType = (
-  formats: VideoInfo['formats'],
-  activeTab: 'video' | 'audio'
-): VideoInfo['formats'] => {
-  if (!formats) {
-    return []
-  }
-
-  return formats.filter((format) => {
-    if (activeTab === 'video') {
-      return format.vcodec && format.vcodec !== 'none'
-    }
-
-    return (
-      format.acodec &&
-      format.acodec !== 'none' &&
-      (format.video_ext === 'none' ||
-        !format.video_ext ||
-        !format.vcodec ||
-        format.vcodec === 'none')
-    )
-  })
 }
 
 interface FormatListProps {
@@ -356,7 +321,6 @@ export function SingleVideoDownload({
   state,
   feedbackSourceUrl,
   ytDlpCommand,
-  onOpenCookiesSettings,
   onStateChange
 }: SingleVideoDownloadProps) {
   const { t } = useTranslation()
@@ -365,24 +329,12 @@ export function SingleVideoDownload({
   const { title, activeTab, selectedContainer, selectedCodec, selectedFps, startTime, endTime } =
     state
   const displayTitle = title || videoInfo?.title || t('download.fetchingVideoInfo')
-  const shouldShowCookiesAction = Boolean(error && isAuthOrCookiesError(error))
 
   const relevantFormats = useMemo(() => {
     if (!videoInfo?.formats) {
       return []
     }
-    const baseFormats = filterFormatsByType(videoInfo.formats, activeTab)
-    if (baseFormats.length === 0) {
-      return []
-    }
-
-    const hasHttpFormats = baseFormats.some(isHttpProtocol)
-    if (!hasHttpFormats) {
-      return baseFormats
-    }
-
-    const nonHlsFormats = baseFormats.filter((format) => !isHlsFormat(format))
-    return nonHlsFormats.length > 0 ? nonHlsFormats : baseFormats
+    return filterFormatsByType(videoInfo.formats, activeTab)
   }, [videoInfo?.formats, activeTab])
 
   const containers = useMemo(() => {
@@ -535,31 +487,13 @@ export function SingleVideoDownload({
       )}
 
       {error && (
-        <>
-          <DownloadParseErrorBanner
-            error={error}
-            showFeedback
-            sourceUrl={feedbackSourceUrl}
-            title={t('errors.fetchInfoFailed')}
-            ytDlpCommand={ytDlpCommand}
-          />
-          {shouldShowCookiesAction && (
-            <div className="-mt-1 mb-3 rounded-md border border-border bg-background/80 p-2">
-              <p className="font-medium text-foreground text-xs">{t('history.cookiesTipTitle')}</p>
-              <p className="mt-1 text-muted-foreground text-xs">{t('settings.cookiesHelpFile')}</p>
-              <Button
-                className="mt-2 h-7 gap-1.5 px-2 text-xs"
-                disabled={!onOpenCookiesSettings}
-                onClick={onOpenCookiesSettings}
-                size="sm"
-                variant="secondary"
-              >
-                <Settings2 className="h-3.5 w-3.5" />
-                {t('history.cookiesTipCta')}
-              </Button>
-            </div>
-          )}
-        </>
+        <DownloadParseErrorBanner
+          error={error}
+          showFeedback
+          sourceUrl={feedbackSourceUrl}
+          title={t('errors.fetchInfoFailed')}
+          ytDlpCommand={ytDlpCommand}
+        />
       )}
 
       {!loading && videoInfo && (

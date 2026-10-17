@@ -5,6 +5,7 @@ import {
   CreateDownloadInputSchema,
   CreateDownloadOutputSchema,
   DirectoryListInputSchema,
+  EngineStatusSchema,
   FileExistsOutputSchema,
   FileOperationOutputSchema,
   FilePathInputSchema,
@@ -67,5 +68,10 @@ export const downloaderContract = {
   settings: {
     get: oc.output(GetWebSettingsOutputSchema),
     set: oc.input(SetWebSettingsInputSchema).output(GetWebSettingsOutputSchema)
+  },
+  engines: {
+    status: oc.output(EngineStatusSchema),
+    check: oc.output(EngineStatusSchema),
+    update: oc.output(EngineStatusSchema)
   }
 }

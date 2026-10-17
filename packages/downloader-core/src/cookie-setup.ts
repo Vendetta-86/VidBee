@@ -22,7 +22,7 @@ export type CookieSetupReason =
 
 export type CookieHealthStatus = 'unconfigured' | 'ok' | 'expired' | 'empty' | 'invalid'
 
-export type CookieHealthSource = 'none' | 'browser' | 'file'
+export type CookieHealthSource = 'none' | 'browser' | 'file' | 'extension'
 
 export type CookieHealthReason =
   | 'missing-file'
@@ -73,11 +73,27 @@ export interface CookieHealth {
   reason?: CookieHealthReason
 }
 
+/** Browser cookie row used to build a Netscape cookies.txt for yt-dlp. */
+export interface NetscapeCookieInput {
+  domain: string
+  name: string
+  value: string
+  path?: string
+  secure?: boolean
+  httpOnly?: boolean
+  hostOnly?: boolean
+  session?: boolean
+  expirationDate?: number
+}
+
 export const COOKIES_GUIDE_URL = 'https://vidbee.org/docs/cookies/'
 export const COOKIES_CHROME_EXTENSION_URL =
   'https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc'
 export const COOKIES_FIREFOX_EXTENSION_URL =
   'https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/'
+export const VIDBEE_EXTENSION_ID = 'kpelcaehdkgleenlldpipjpoopnacehk'
+export const VIDBEE_EXTENSION_ORIGIN = `chrome-extension://${VIDBEE_EXTENSION_ID}`
+export const VIDBEE_EXTENSION_CHROME_URL = `https://chromewebstore.google.com/detail/${VIDBEE_EXTENSION_ID}`
 
 const CHROMIUM_FAMILY_BROWSERS = new Set<CookieBrowserId>([
   'chrome',
@@ -101,7 +117,7 @@ const BROWSER_PREFERENCE: readonly CookieBrowserId[] = [
   'safari'
 ]
 
-const SITE_SPECS = [
+export const COOKIE_SITE_SPECS = [
   {
     id: 'youtube',
     label: 'YouTube',
@@ -317,7 +333,6 @@ export const inspectNetscapeCookies = (text: string, cookiesPath?: string): Cook
     }
   }
 
-  const nowSeconds = Math.floor(Date.now() / 1000)
   const cookies = parseNetscapeCookieLines(text)
   if (cookies.length === 0) {
     return {
@@ -329,28 +344,7 @@ export const inspectNetscapeCookies = (text: string, cookiesPath?: string): Cook
     }
   }
 
-  const sites: CookieSiteMatch[] = []
-  for (const spec of SITE_SPECS) {
-    const matches = cookies.filter(
-      (cookie) =>
-        spec.domainIncludes.some(
-          (domain) => cookie.domain === domain || cookie.domain.endsWith(`.${domain}`)
-        ) && spec.cookieNames.some((name) => name === cookie.name)
-    )
-    if (matches.length === 0) {
-      continue
-    }
-    const freshMatches = matches.filter(
-      (cookie) => cookie.expires === 0 || cookie.expires > nowSeconds
-    )
-    // Match yt-dlp's YouTube authentication requirements, not leftover SID cookies.
-    if (spec.id === 'youtube' && !hasYouTubeLoginCookies(matches)) {
-      continue
-    }
-    const hasFresh =
-      spec.id === 'youtube' ? hasYouTubeLoginCookies(freshMatches) : freshMatches.length > 0
-    sites.push({ expired: !hasFresh, id: spec.id, label: spec.label })
-  }
+  const sites = matchCookieSites(cookies)
 
   if (sites.some((site) => !site.expired)) {
     return {
@@ -378,6 +372,132 @@ export const inspectNetscapeCookies = (text: string, cookiesPath?: string): Cook
     sites: []
   }
 }
+
+/**
+ * Map cookie domain/name rows onto the supported signed-in sites.
+ *
+ * @param cookies Domain, name, and expiry rows.
+ */
+export const matchCookieSites = (
+  cookies: readonly { domain: string; name: string; expires: number }[]
+): CookieSiteMatch[] => {
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  const sites: CookieSiteMatch[] = []
+  for (const spec of COOKIE_SITE_SPECS) {
+    const matches = cookies.filter(
+      (cookie) =>
+        spec.domainIncludes.some((domain) => cookieDomainMatches(cookie.domain, domain)) &&
+        spec.cookieNames.some((name) => name === cookie.name)
+    )
+    if (matches.length === 0) {
+      continue
+    }
+    if (spec.id === 'youtube' && !hasYouTubeLoginCookies(matches)) {
+      continue
+    }
+    const freshMatches = matches.filter(
+      (cookie) => cookie.expires === 0 || cookie.expires > nowSeconds
+    )
+    const hasFresh =
+      spec.id === 'youtube' ? hasYouTubeLoginCookies(freshMatches) : freshMatches.length > 0
+    sites.push({ expired: !hasFresh, id: spec.id, label: spec.label })
+  }
+  return sites
+}
+
+/**
+ * Cookie lookup domains for a download URL, including sibling auth hosts.
+ *
+ * @param url Download or watch URL.
+ */
+export const cookieDomainsForUrl = (url: string): string[] => {
+  let hostname = ''
+  try {
+    const parsed = new URL(url)
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+      return []
+    }
+    hostname = parsed.hostname.toLowerCase()
+  } catch {
+    return []
+  }
+  if (!hostname) {
+    return []
+  }
+
+  const domains = new Set<string>()
+  for (const spec of COOKIE_SITE_SPECS) {
+    if (spec.domainIncludes.some((domain) => cookieDomainMatches(hostname, domain))) {
+      for (const fragment of spec.domainIncludes) {
+        domains.add(fragment)
+      }
+    }
+  }
+  if (domains.size > 0) {
+    return [...domains]
+  }
+
+  // Keep unknown hosts exact; guessing a registrable domain can expose sibling sites.
+  return [hostname]
+}
+
+/** Match a cookie host to a domain boundary, never an arbitrary substring. */
+export function cookieDomainMatches(host: string, domain: string): boolean {
+  const normalized = host.toLowerCase().replace(/^\./, '')
+  const normalizedDomain = domain.toLowerCase().replace(/^\./, '')
+  return (
+    Boolean(normalizedDomain) &&
+    (normalized === normalizedDomain || normalized.endsWith(`.${normalizedDomain}`))
+  )
+}
+
+/** Accept configured auth hosts and parent-domain cookies applicable to the requested URL. */
+export function cookieMatchesUrlScope(cookieDomain: string, url: string): boolean {
+  const domains = cookieDomainsForUrl(url)
+  if (domains.length === 0) {
+    return false
+  }
+  return (
+    domains.some((domain) => cookieDomainMatches(cookieDomain, domain)) ||
+    cookieDomainMatches(new URL(url).hostname, cookieDomain)
+  )
+}
+
+/**
+ * Serialize browser cookie rows to a Netscape cookies.txt body for yt-dlp.
+ *
+ * @param cookies Cookie rows from the browser extension.
+ */
+export const serializeNetscapeCookies = (cookies: readonly NetscapeCookieInput[]): string => {
+  const lines = ['# Netscape HTTP Cookie File', '# This file was generated by VidBee', '']
+  for (const cookie of cookies) {
+    const name = sanitizeNetscapeField(cookie.name)
+    const value = sanitizeNetscapeField(cookie.value)
+    if (!name) {
+      continue
+    }
+    const rawDomain = cookie.domain.trim().toLowerCase()
+    if (!rawDomain) {
+      continue
+    }
+    const dotted = cookie.hostOnly || rawDomain.startsWith('.') ? rawDomain : `.${rawDomain}`
+    const includeSubdomains = dotted.startsWith('.') ? 'TRUE' : 'FALSE'
+    const domainField = cookie.httpOnly ? `${HTTPONLY_DOMAIN_PREFIX}${dotted}` : dotted
+    const expires =
+      cookie.session || !cookie.expirationDate ? '0' : String(Math.floor(cookie.expirationDate))
+    const path = cookie.path?.trim() || '/'
+    const secure = cookie.secure ? 'TRUE' : 'FALSE'
+    lines.push([domainField, includeSubdomains, path, secure, expires, name, value].join('\t'))
+  }
+  return `${lines.join('\n')}\n`
+}
+
+/**
+ * Strip Netscape field separators from a cookie name or value.
+ *
+ * @param value Raw cookie field.
+ */
+const sanitizeNetscapeField = (value: string): string => value.replace(/[\t\r\n]/g, '')
 
 /**
  * True when the sample looks like a Netscape cookies export rather than a DB.
@@ -466,7 +586,7 @@ interface ParsedNetscapeCookie {
   expires: number
 }
 
-const hasYouTubeLoginCookies = (cookies: ParsedNetscapeCookie[]): boolean =>
+const hasYouTubeLoginCookies = (cookies: readonly { name: string }[]): boolean =>
   cookies.some((cookie) => cookie.name === 'LOGIN_INFO') &&
   cookies.some((cookie) =>
     ['SAPISID', '__Secure-1PAPISID', '__Secure-3PAPISID'].includes(cookie.name)

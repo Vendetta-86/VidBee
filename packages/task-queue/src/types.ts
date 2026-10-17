@@ -13,6 +13,8 @@ export type TaskKind =
   | 'subscription-item'
   | 'yt-dlp-forward'
   | 'transcription'
+  | 'conversion'
+  | 'model-download'
 
 /** Media download kinds that may receive a transcription child task. */
 export const TRANSCRIBABLE_TASK_KINDS: ReadonlySet<TaskKind> = new Set([
@@ -23,7 +25,13 @@ export const TRANSCRIBABLE_TASK_KINDS: ReadonlySet<TaskKind> = new Set([
 
 export const TRANSCRIPTION_GROUP_KEY = 'transcription'
 
-export const isDownloadTaskKind = (kind: TaskKind): boolean => kind !== 'transcription'
+/** Identify tasks handled by downloader-specific services. */
+export const isDownloadTaskKind = (kind: TaskKind): boolean =>
+  kind !== 'transcription' && kind !== 'conversion' && kind !== 'model-download'
+
+/** Media-producing tasks share file, playback and history surfaces. */
+export const isMediaTaskKind = (kind: TaskKind): boolean =>
+  isDownloadTaskKind(kind) || kind === 'conversion'
 
 export type TaskStatus =
   | 'queued'
@@ -62,6 +70,16 @@ export type ErrorCategory =
   | 'output-missing'
   | 'unknown'
 
+/** Creation provenance is independent of the executor and survives retries. */
+export interface TaskCreationMetadata {
+  origin: 'manual' | 'subscription' | 'agent'
+  agentConversation?: {
+    downloadId: string
+    threadId: string
+    promptId: string
+  }
+}
+
 export interface TaskInput {
   url: string
   kind: TaskKind
@@ -90,7 +108,17 @@ export interface TranscriptTaskResult {
   transcriptId: string
 }
 
+export type SubtitleDownloadStatus = 'downloaded' | 'unavailable' | 'skipped-auth' | 'failed'
+
 export interface TaskOutput {
+  /** Immutable acquisition facts captured by the downloader process. */
+  subtitleAcquisition?: {
+    id: string
+    acquiredAt: number
+    credentialsUsed?: boolean
+    visibility?: 'public' | 'private' | 'unlisted'
+  }
+
   filePath: string
   size: number
   durationMs: number | null
@@ -103,6 +131,10 @@ export interface TaskOutput {
    * one (e.g. fake fixtures, raw `yt-dlp -j` info-fetch).
    */
   formatId?: string | null
+  /** Outcome of an optional subtitle request; absent when subtitles were not requested. */
+  subtitleStatus?: SubtitleDownloadStatus
+  /** Actual yt-dlp subtitle language tags selected for download. */
+  subtitleLanguages?: string[]
   /**
    * Set by the transcription executor after the transcript or explicit
    * no-speech result has been committed to SQLite. Download tasks leave

@@ -20,16 +20,16 @@ import {
 } from '@renderer/components/ui/context-menu'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@renderer/components/ui/hover-card'
 import { RemoteImage } from '@renderer/components/ui/remote-image'
-import { ScrollArea, ScrollBar } from '@renderer/components/ui/scroll-area'
+import { ScrollArea } from '@renderer/components/ui/scroll-area'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { ipcServices } from '@renderer/lib/ipc'
-import { getSubscriptionStatusMeta } from '@renderer/lib/subscription-status'
 import { withDesktopUtm } from '@renderer/lib/url'
 import { cn } from '@renderer/lib/utils'
 import { type DownloadRecord, downloadsArrayAtom } from '@renderer/store/downloads'
 import {
   createSubscriptionAtom,
+  loadSubscriptionsAtom,
   refreshSubscriptionAtom,
   removeSubscriptionAtom,
   resolveFeedAtom,
@@ -38,15 +38,21 @@ import {
 } from '@renderer/store/subscriptions'
 import type { DownloadStatus, SubscriptionFeedItem, SubscriptionRule } from '@shared/types'
 import { SUBSCRIPTION_DUPLICATE_FEED_ERROR } from '@shared/types'
+import {
+  getSubscriptionStatusMeta,
+  resolveSubscriptionItemStatus
+} from '@vidbee/subscriptions-core/status'
 import dayjs from 'dayjs'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { Download, Edit, ExternalLink, Plus, Power, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, Download, Edit, ExternalLink, Plus, Power, RefreshCw, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { logger } from '../lib/logger'
 
 type SubscriptionItemStatus = DownloadStatus | 'queued' | 'notQueued'
+
+const POLL_INTERVAL_MS = 5000
 
 const subscriptionItemStatusLabels: Record<SubscriptionItemStatus, string> = {
   notQueued: 'subscriptions.items.status.notQueued',
@@ -219,12 +225,22 @@ function SubscriptionTab({
 export function Subscriptions() {
   const { t } = useTranslation()
   const [subscriptions] = useAtom(subscriptionsAtom)
+  const loadSubscriptions = useSetAtom(loadSubscriptionsAtom)
   const updateSubscription = useSetAtom(updateSubscriptionAtom)
   const removeSubscription = useSetAtom(removeSubscriptionAtom)
   const refreshSubscription = useSetAtom(refreshSubscriptionAtom)
 
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [selectedTab, setSelectedTab] = useState<string>('')
+
+  useEffect(() => {
+    // Another host can update the shared database without a local IPC event.
+    void loadSubscriptions()
+    const timer = window.setInterval(() => {
+      void loadSubscriptions()
+    }, POLL_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [loadSubscriptions])
 
   const sortedSubscriptions = useMemo(
     () =>
@@ -346,7 +362,7 @@ export function Subscriptions() {
     <div className="relative flex h-full w-full flex-col">
       {/* Channel Tabs Header */}
       <div className="flex flex-row pr-6 pb-6 pl-6">
-        <ScrollArea className="w-auto overflow-y-auto">
+        <ScrollArea className="min-w-0 flex-1" orientation="horizontal" viewportClassName="h-auto">
           <div className="flex h-auto w-auto justify-start">
             {sortedSubscriptions.map((subscription) => (
               <SubscriptionTab
@@ -360,10 +376,9 @@ export function Subscriptions() {
               />
             ))}
           </div>
-          <ScrollBar orientation="horizontal" />
         </ScrollArea>
 
-        {/* Add RSS Button */}
+        {/* Add subscription button */}
         <Button
           className="flex h-auto w-20 shrink-0 grow-0 flex-col items-center gap-1 rounded-2xl bg-transparent px-2 py-2 transition-all hover:bg-neutral-100 hover:opacity-80"
           onClick={() => setAddDialogOpen(true)}
@@ -523,21 +538,16 @@ function SubscriptionCard({ subscription }: { subscription: SubscriptionRule }) 
   }, [feedItems, downloadLookup, historyStatusMap])
 
   const resolveItemStatus = (item: SubscriptionFeedItem): SubscriptionItemStatus => {
-    if (!item.addedToQueue) {
-      return 'notQueued'
+    const combined = new Map<string, { status: string }>()
+    for (const [id, download] of downloadLookup) {
+      combined.set(id, { status: download.status })
     }
-    if (!item.downloadId) {
-      return 'queued'
-    }
-    const matchedDownload = downloadLookup.get(item.downloadId)
-    if (!matchedDownload) {
-      const cachedHistoryStatus = historyStatusMap[item.downloadId]
-      if (cachedHistoryStatus) {
-        return cachedHistoryStatus
+    for (const [id, status] of Object.entries(historyStatusMap)) {
+      if (status && !combined.has(id)) {
+        combined.set(id, { status })
       }
-      return 'queued'
     }
-    return matchedDownload.status
+    return resolveSubscriptionItemStatus(item, combined)
   }
 
   const handleOpenItem = async (url: string) => {
@@ -546,6 +556,20 @@ function SubscriptionCard({ subscription }: { subscription: SubscriptionRule }) 
     } catch (error) {
       logger.error('Failed to open subscription item link:', error)
       toast.error(t('subscriptions.notifications.openLinkError'))
+    }
+  }
+
+  const handleCopyItemUrl = async (url: string) => {
+    if (!(url && navigator.clipboard?.writeText)) {
+      toast.error(t('notifications.copyFailed'))
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(url)
+      toast.success(t('notifications.urlCopied'))
+    } catch (error) {
+      logger.error('Failed to copy subscription item link:', error)
+      toast.error(t('notifications.copyFailed'))
     }
   }
 
@@ -682,6 +706,13 @@ function SubscriptionCard({ subscription }: { subscription: SubscriptionRule }) 
               <ContextMenuItem onClick={() => void handleOpenItem(item.url)}>
                 <ExternalLink className="h-4 w-4" />
                 {t('subscriptions.items.actions.open')}
+              </ContextMenuItem>
+              <ContextMenuItem
+                disabled={!item.url}
+                onClick={() => void handleCopyItemUrl(item.url)}
+              >
+                <Copy className="h-4 w-4" />
+                {t('subscriptions.items.actions.copyUrl')}
               </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>

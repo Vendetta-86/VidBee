@@ -1,6 +1,8 @@
 import { lookup } from 'node:dns/promises'
+import { createReadStream } from 'node:fs'
 import type { ServerResponse } from 'node:http'
 import net from 'node:net'
+import path from 'node:path'
 import cors from '@fastify/cors'
 import { OpenAPIHandler } from '@orpc/openapi/fastify'
 import { OpenAPIReferencePlugin } from '@orpc/openapi/plugins'
@@ -8,10 +10,16 @@ import { RPCHandler } from '@orpc/server/fastify'
 import { ZodToJsonSchemaConverter } from '@orpc/zod/zod4'
 import Fastify from 'fastify'
 import { startTaskQueue, stopTaskQueue, taskQueue } from './lib/downloader'
+import { startEngines, stopEngines } from './lib/engines'
+import { resolveReadableMediaFile } from './lib/managed-files'
 import { projectTaskForApi } from './lib/projection'
 import { rpcRouter } from './lib/rpc-router'
 import { SseHub } from './lib/sse'
-import { startApiSubscriptions, stopApiSubscriptions } from './lib/subscriptions-host'
+import {
+  getApiSubscriptions,
+  startApiSubscriptions,
+  stopApiSubscriptions
+} from './lib/subscriptions-host'
 import { subscriptionsRouter } from './lib/subscriptions-router'
 
 const MAX_PROXY_IMAGE_BYTES = 10 * 1024 * 1024
@@ -108,6 +116,7 @@ const parseRemoteImageUrl = (value: string): URL | null => {
 export const createApiServer = async () => {
   await startTaskQueue()
   await startApiSubscriptions()
+  void startEngines()
   const isDev = process.env.NODE_ENV !== 'production'
 
   const fastify = Fastify({
@@ -172,9 +181,39 @@ export const createApiServer = async () => {
       publishQueueUpdated()
     }
   })
+  const unsubscribeSubscriptions = getApiSubscriptions().on('changed', () => {
+    sseHub.publish('subscriptions-updated', { at: Date.now() })
+  })
 
   fastify.get('/health', async () => {
     return { ok: true }
+  })
+
+  const FILE_CONTENT_TYPES = new Map([
+    ['.m4a', 'audio/mp4'],
+    ['.mkv', 'video/x-matroska'],
+    ['.mp3', 'audio/mpeg'],
+    ['.mp4', 'video/mp4'],
+    ['.webm', 'video/webm'],
+    ['.webp', 'image/webp']
+  ])
+
+  fastify.get<{ Querystring: { path?: string } }>('/files', async (request, reply) => {
+    const rawPath = request.query.path?.trim()
+    if (!rawPath) {
+      return reply.code(400).send({ message: 'Missing path query parameter.' })
+    }
+
+    const resolvedPath = await resolveReadableMediaFile(rawPath)
+    if (!resolvedPath) {
+      return reply.code(404).send({ message: 'File is not available.' })
+    }
+
+    const extension = path.extname(resolvedPath).toLowerCase()
+    const fileName = path.basename(resolvedPath)
+    reply.header('content-type', FILE_CONTENT_TYPES.get(extension) ?? 'application/octet-stream')
+    reply.header('content-disposition', `attachment; filename="${fileName.replaceAll('"', '')}"`)
+    return reply.send(createReadStream(resolvedPath))
   })
 
   fastify.get<{ Querystring: { url?: string } }>('/images/proxy', async (request, reply) => {
@@ -341,7 +380,9 @@ export const createApiServer = async () => {
   })
 
   fastify.addHook('onClose', async () => {
+    unsubscribeSubscriptions()
     sseHub.closeAll()
+    stopEngines()
     await stopApiSubscriptions()
     await stopTaskQueue()
   })

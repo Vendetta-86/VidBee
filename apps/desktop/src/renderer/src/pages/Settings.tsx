@@ -1,3 +1,4 @@
+import { AccountPanel } from '@renderer/components/settings/AccountPanel'
 import { AiPromptsPanel } from '@renderer/components/settings/AiPromptsPanel'
 import { AiProvidersPanel } from '@renderer/components/settings/AiProvidersPanel'
 import { AsrModelPicker } from '@renderer/components/settings/AsrModelPicker'
@@ -49,6 +50,7 @@ import {
 import { type LanguageCode, languageList, normalizeLanguageCode } from '@vidbee/i18n/languages'
 import { DragRegion } from '@vidbee/ui/components/ui/drag-region'
 import { SubtitleLanguagePicker } from '@vidbee/ui/components/ui/subtitle-language-picker'
+import { WebmThumbnailNotice } from '@vidbee/ui/components/ui/webm-thumbnail-notice'
 import { useAtom, useSetAtom } from 'jotai'
 import { Film, Music } from 'lucide-react'
 import { useTheme } from 'next-themes'
@@ -189,7 +191,10 @@ export function Settings() {
   }
 
   const activeNavLabelKey =
-    SETTINGS_NAV_ITEMS.find((item) => item.value === activeTab)?.labelKey ?? 'settings.general'
+    activeTab === 'account'
+      ? 'settings.account.tab'
+      : (SETTINGS_NAV_ITEMS.find((item) => item.value === activeTab)?.labelKey ??
+        'settings.general')
 
   return (
     <div className="flex h-full min-h-0 bg-background">
@@ -213,6 +218,9 @@ export function Settings() {
               <h2 className="font-semibold text-2xl leading-tight">{t(activeNavLabelKey)}</h2>
             </div>
             <Tabs onValueChange={handleTabChange} value={activeTab}>
+              <TabPanel className="space-y-4" value="account">
+                <AccountPanel />
+              </TabPanel>
               <TabPanel className="space-y-4" value="general">
                 <ItemGroup>
                   <Item variant="muted">
@@ -379,6 +387,7 @@ export function Settings() {
                           <ItemDescription>
                             {t('settings.oneClickContainerDescription')}
                           </ItemDescription>
+                          <WebmThumbnailNotice container={settings.oneClickContainer} />
                         </ItemContent>
                         <ItemActions>
                           <Select
@@ -613,6 +622,7 @@ export function Settings() {
                     <ItemContent>
                       <ItemTitle>{t('settings.embedThumbnail')}</ItemTitle>
                       <ItemDescription>{t('settings.embedThumbnailDescription')}</ItemDescription>
+                      <WebmThumbnailNotice container={settings.oneClickContainer} />
                     </ItemContent>
                     <ItemActions>
                       <Switch
@@ -680,6 +690,38 @@ export function Settings() {
 
               <TabPanel className="space-y-4" value="providers">
                 <AiProvidersPanel />
+                <ItemGroup>
+                  <Item variant="muted">
+                    <ItemContent>
+                      <ItemTitle>{t('settings.agentManagementTools')}</ItemTitle>
+                      <ItemDescription>
+                        {t('settings.agentManagementToolsDescription')}
+                      </ItemDescription>
+                    </ItemContent>
+                    <ItemActions>
+                      <Select
+                        onValueChange={(value) => {
+                          handleSettingChange(
+                            'agentManagementTools',
+                            value as 'off' | 'ask' | 'auto'
+                          )
+                        }}
+                        value={settings.agentManagementTools ?? 'ask'}
+                      >
+                        <SelectTrigger className="w-36">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(['off', 'ask', 'auto'] as const).map((mode) => (
+                            <SelectItem key={mode} value={mode}>
+                              {t(`settings.agentManagementToolsOptions.${mode}`)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </ItemActions>
+                  </Item>
+                </ItemGroup>
               </TabPanel>
 
               <TabPanel className="space-y-4" value="prompts">
@@ -1024,7 +1066,6 @@ const formatFilenamePreview = (fileName: string, enabled: boolean): string => {
 const FilenameStylePicker = ({
   filenameViaVidBee,
   onChange,
-  onFilenameViaVidBeeChange,
   value
 }: {
   filenameViaVidBee: boolean
@@ -1091,22 +1132,6 @@ const FilenameStylePicker = ({
           </ItemTitle>
           <ItemDescription>{t('settings.filenameStylePreviewAudio')}</ItemDescription>
         </ItemContent>
-      </Item>
-
-      <ItemSeparator />
-
-      <Item variant="muted">
-        <ItemContent>
-          <ItemTitle>{t('settings.filenameViaVidBee')}</ItemTitle>
-          <ItemDescription>{t('settings.filenameViaVidBeeDescription')}</ItemDescription>
-        </ItemContent>
-        <ItemActions>
-          <Switch
-            checked={filenameViaVidBee}
-            label=""
-            onToggle={() => onFilenameViaVidBeeChange(!filenameViaVidBee)}
-          />
-        </ItemActions>
       </Item>
 
       <ItemSeparator />

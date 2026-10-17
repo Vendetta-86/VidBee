@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { safeStorage } from 'electron'
 import {
+  AGENT_THINKING_LEVELS,
+  type AgentThinkingLevel,
+  PROVIDER_THINKING_EFFORT_LEVELS,
+  type ProviderDefaultThinkingLevel
+} from '../../shared/agent-chat'
+import {
   aiProviderNeedsApiKey,
   getAiProviderPreset,
   resolveAiProviderBaseUrl
@@ -38,18 +44,30 @@ interface StoredAiState {
 const log = scopedLoggers.ai
 
 const PRESET_NAMES: Record<AiProviderPresetId, string> = {
+  alibaba: 'Alibaba Cloud',
   anthropic: 'Anthropic',
   azure: 'Azure',
   custom: 'Custom',
   deepseek: 'Deepseek',
+  fireworks: 'Fireworks',
   google: 'Google',
   groq: 'Groq',
   huggingface: 'Hugging Face',
   lmstudio: 'LMStudio',
+  minimax: 'MiniMax',
+  mistral: 'Mistral',
+  moonshot: 'Moonshot',
+  novita: 'Novita',
   ollama: 'Ollama',
   openai: 'OpenAI',
   openrouter: 'OpenRouter',
-  xai: 'xAI'
+  ppio: 'PPIO',
+  siliconflow: 'SiliconFlow',
+  stepfun: 'StepFun',
+  together: 'Together',
+  volcengine: 'Volcengine',
+  xai: 'xAI',
+  zhipu: 'Zhipu'
 }
 
 const PROMPT_ICONS = new Set<AiPromptIconId>([
@@ -76,16 +94,63 @@ const isPromptIcon = (value: string): value is AiPromptIconId =>
   PROMPT_ICONS.has(value as AiPromptIconId)
 
 /**
+ * Persist selected effort levels, dropping unknown names.
+ *
+ * @param value Dialog payload.
+ */
+function readThinkingLevels(value: unknown): AgentThinkingLevel[] | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+  if (!Array.isArray(value)) {
+    throw new Error('Invalid thinking levels')
+  }
+  const levels = [
+    ...new Set(
+      value.filter((level): level is AgentThinkingLevel =>
+        (PROVIDER_THINKING_EFFORT_LEVELS as readonly string[]).includes(level)
+      )
+    )
+  ]
+  return levels.length > 0 ? levels : undefined
+}
+
+/**
+ * Persist the composer default thinking level.
+ *
+ * @param value Dialog payload.
+ */
+function readDefaultThinkingLevel(value: unknown): ProviderDefaultThinkingLevel | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+  if (value === 'auto' || AGENT_THINKING_LEVELS.includes(value as AgentThinkingLevel)) {
+    return value as ProviderDefaultThinkingLevel
+  }
+  throw new Error('Invalid default thinking level')
+}
+
+/**
  * Drop the sealed API key before sending a provider to the renderer.
  *
  * @param provider Stored provider including the sealed secret.
  */
 const toPublicProvider = (provider: StoredProvider): AiProviderConfig => ({
   id: provider.id,
+  groupId: provider.groupId,
   presetId: provider.presetId,
   name: provider.name,
   baseUrl: provider.baseUrl,
   modelId: provider.modelId,
+  contextWindow: provider.contextWindow,
+  vision: provider.vision,
+  tools: provider.tools,
+  reasoning: provider.reasoning,
+  thinkingOnly: provider.thinkingOnly,
+  allowDisableThinking: provider.allowDisableThinking,
+  thinkingLevels: provider.thinkingLevels,
+  defaultThinkingLevel: provider.defaultThinkingLevel,
+  maxTokens: provider.maxTokens,
   hasApiKey: provider.apiKeySealed.length > 0,
   createdAt: provider.createdAt,
   updatedAt: provider.updatedAt
@@ -138,14 +203,28 @@ class AiStore {
     }
   }
 
-  /**
-   * Return providers and prompts for the renderer. API keys are never included.
-   */
+  /** Read the managed model selected for future requests. */
+  getCloudModelId(): string | null {
+    const id: unknown = this.store.get('cloudModelId')
+    return typeof id === 'string' && id ? id : null
+  }
+
+  /** Select a managed model and switch away from an own-key provider. */
+  setCloudModel(id: string): AiSettingsSnapshot {
+    if (typeof id !== 'string' || !id.trim() || id.length > 200) {
+      throw new Error('Invalid Cloud model id')
+    }
+    this.store.set({ cloudModelId: id, activeProviderId: null })
+    return this.getSnapshot()
+  }
+
+  /** Return safe provider settings and the persisted managed model selection. */
   getSnapshot(): AiSettingsSnapshot {
     const state = this.readState()
     const activeExists = state.providers.some((provider) => provider.id === state.activeProviderId)
     return {
       activeProviderId: activeExists ? state.activeProviderId : null,
+      cloudModelId: this.getCloudModelId(),
       providers: state.providers.map(toPublicProvider),
       prompts: [...state.prompts].sort((left, right) => left.sortOrder - right.sortOrder)
     }
@@ -174,18 +253,69 @@ class AiStore {
     const existing = input.id
       ? state.providers.find((provider) => provider.id === input.id)
       : undefined
+    const copiedKey = input.copyApiKeyFromId
+      ? (state.providers.find((provider) => provider.id === input.copyApiKeyFromId)?.apiKeySealed ??
+        '')
+      : ''
     const nextKey = input.apiKey?.trim()
       ? sealAiSecret(input.apiKey, safeStorage)
-      : (existing?.apiKeySealed ?? '')
+      : (existing?.apiKeySealed ?? copiedKey)
     if (aiProviderNeedsApiKey(input.presetId) && !nextKey) {
       throw new Error('API key is required')
     }
+    if (
+      input.contextWindow !== undefined &&
+      (!Number.isSafeInteger(input.contextWindow) ||
+        input.contextWindow < 4096 ||
+        input.contextWindow > 2_000_000)
+    ) {
+      throw new Error('Context window must be between 4096 and 2000000 tokens')
+    }
+    if (input.vision !== undefined && typeof input.vision !== 'boolean') {
+      throw new Error('Invalid image input capability')
+    }
+    if (input.tools !== undefined && typeof input.tools !== 'boolean') {
+      throw new Error('Invalid tool calling capability')
+    }
+    if (input.reasoning !== undefined && typeof input.reasoning !== 'boolean') {
+      throw new Error('Invalid thinking capability')
+    }
+    if (input.thinkingOnly !== undefined && typeof input.thinkingOnly !== 'boolean') {
+      throw new Error('Invalid thinking-only capability')
+    }
+    if (
+      input.allowDisableThinking !== undefined &&
+      typeof input.allowDisableThinking !== 'boolean'
+    ) {
+      throw new Error('Invalid allow-disable-thinking capability')
+    }
+    const thinkingLevels = readThinkingLevels(input.thinkingLevels)
+    const defaultThinkingLevel = readDefaultThinkingLevel(input.defaultThinkingLevel)
+    if (
+      input.maxTokens !== undefined &&
+      (!Number.isSafeInteger(input.maxTokens) ||
+        input.maxTokens < 256 ||
+        input.maxTokens > 2_000_000 ||
+        (input.contextWindow !== undefined && input.maxTokens >= input.contextWindow))
+    ) {
+      throw new Error('Output tokens must be between 256 and the context window')
+    }
     const record: StoredProvider = {
       id: existing?.id ?? randomUUID(),
+      groupId: input.groupId ?? existing?.groupId,
       presetId: input.presetId,
       name: input.name?.trim() || existing?.name || PRESET_NAMES[input.presetId],
       baseUrl,
       modelId,
+      contextWindow: input.contextWindow,
+      vision: input.vision,
+      tools: input.tools,
+      reasoning: input.reasoning,
+      thinkingOnly: input.thinkingOnly,
+      allowDisableThinking: input.allowDisableThinking,
+      thinkingLevels,
+      defaultThinkingLevel,
+      maxTokens: input.maxTokens,
       hasApiKey: nextKey.length > 0,
       apiKeySealed: nextKey,
       createdAt: existing?.createdAt ?? now,

@@ -2,6 +2,17 @@
 
 export * from './types'
 export * from './schemas'
+export {
+  buildDefaultSubscriptionDirectory,
+  sanitizeCommaList,
+  sanitizeTemplateInput
+} from './form'
+export {
+  disabledStatusMeta,
+  getSubscriptionStatusMeta,
+  resolveSubscriptionItemStatus
+} from './status'
+export type { SubscriptionItemQueueStatus, SubscriptionStatusMeta } from './status'
 export { subscriptionContract } from './contract'
 export type { SubscriptionContract } from './contract'
 
@@ -32,7 +43,7 @@ export {
   createSqliteSubscriptionsStore,
   InMemoryMetaStore
 } from './store'
-export type { CreateSqliteStoresOptions, SubscriptionsStore } from './store'
+export type { CreateSqliteStoresOptions, QueueLinkSelector, SubscriptionsStore } from './store'
 
-export { SubscriptionsApi, SUBSCRIPTION_DUPLICATE_FEED_ERROR } from './api'
+export { SubscriptionsApi } from './api'
 export type { EnqueueItem, EnqueueItemContext, SubscriptionsApiOptions } from './api'

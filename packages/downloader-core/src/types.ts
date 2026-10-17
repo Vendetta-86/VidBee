@@ -93,6 +93,7 @@ export interface DownloadTask {
 }
 
 export interface DownloadRuntimeSettings {
+  skipCookieAuth?: boolean
   downloadPath?: string
   browserForCookies?: string
   cookiesPath?: string

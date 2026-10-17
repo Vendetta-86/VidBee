@@ -2,6 +2,7 @@ import type { FilenameStyle } from '@vidbee/downloader-core/filename-style'
 import type { OneClickContainerOption } from '@vidbee/downloader-core/format-preferences'
 import { DEFAULT_SUBTITLE_LANGUAGES } from '@vidbee/downloader-core/subtitle-languages'
 import { defaultLanguageCode, type LanguageCode } from '@vidbee/i18n/languages'
+import type { TaskCreationMetadata, TaskKind } from '@vidbee/task-queue'
 import type { AsrTierId } from '@vidbee/transcription/asr'
 import type { DownloadMirror } from '@vidbee/transcription/download-mirrors'
 
@@ -96,7 +97,10 @@ export interface DownloadItem {
   uploader?: string
   viewCount?: number
   tags?: string[]
-  origin?: 'manual' | 'subscription'
+  origin?: TaskCreationMetadata['origin']
+  agentConversation?: TaskCreationMetadata['agentConversation']
+  parentId?: string
+  taskKind?: TaskKind
   subscriptionId?: string
   // Download-specific format info
   selectedFormat?: VideoFormat
@@ -106,6 +110,8 @@ export interface DownloadItem {
    * the row uses this to render a "fell back" hint.
    */
   resolvedFormatId?: string
+  subtitleStatus?: 'downloaded' | 'unavailable' | 'skipped-auth' | 'failed'
+  subtitleLanguages?: string[]
   // Playlist context (optional)
   playlistId?: string
   playlistTitle?: string
@@ -145,9 +151,13 @@ export interface DownloadHistoryItem {
   downloadPath?: string
   savedFileName?: string
   resolvedFormatId?: string
+  subtitleStatus?: 'downloaded' | 'unavailable' | 'skipped-auth' | 'failed'
+  subtitleLanguages?: string[]
   fileSize?: number
   duration?: number
   downloadedAt: number
+  createdAt?: number
+  startedAt?: number
   completedAt?: number
   error?: string
   ytDlpCommand?: string
@@ -159,7 +169,10 @@ export interface DownloadHistoryItem {
   uploader?: string
   viewCount?: number
   tags?: string[]
-  origin?: 'manual' | 'subscription'
+  origin?: TaskCreationMetadata['origin']
+  agentConversation?: TaskCreationMetadata['agentConversation']
+  parentId?: string
+  taskKind?: TaskKind
   subscriptionId?: string
   // Download-specific format info
   selectedFormat?: VideoFormat
@@ -183,7 +196,7 @@ export interface DownloadOptions {
   customFilenameTemplate?: string
   containerFormat?: OneClickContainerOption
   tags?: string[]
-  origin?: 'manual' | 'subscription'
+  origin?: TaskCreationMetadata['origin']
   subscriptionId?: string
   /**
    * Pre-fetched videoInfo metadata so the renderer's optimistic row
@@ -200,7 +213,9 @@ export interface DownloadOptions {
   viewCount?: number
   duration?: number
   selectedFormat?: VideoFormat
-  runtimeSettings?: Partial<Pick<AppSettings, 'browserForCookies' | 'cookiesPath'>>
+  runtimeSettings?: Partial<Pick<AppSettings, 'browserForCookies' | 'cookiesPath'>> & {
+    skipCookieAuth?: boolean
+  }
 }
 
 export interface PlaylistEntry {
@@ -328,7 +343,6 @@ export interface AppSettings {
   cookiesPath: string
   proxy: string
   configPath: string
-  betaProgram: boolean
   language: LanguageCode
   theme: string
   oneClickDownload: boolean
@@ -360,6 +374,8 @@ export interface AppSettings {
   /** Prefer ModelScope / GitHub proxies when GitHub is blocked or auto-detected as China. */
   downloadMirror: DownloadMirror
   lastSeenWhatsNew: string
+  /** How management tools run: hidden, ask first, or autonomous. */
+  agentManagementTools: 'off' | 'ask' | 'auto'
 }
 
 export const DEFAULT_SUBSCRIPTION_FILENAME_TEMPLATE = '%(uploader)s/%(title)s.%(ext)s'
@@ -372,7 +388,6 @@ export const defaultSettings: AppSettings = {
   cookiesPath: '',
   proxy: '',
   configPath: '',
-  betaProgram: false,
   language: defaultLanguageCode,
   theme: 'system',
   oneClickDownload: true,
@@ -402,5 +417,6 @@ export const defaultSettings: AppSettings = {
   maxConcurrentTranscriptions: 1,
   asrTier: 'minimal',
   downloadMirror: 'auto',
-  lastSeenWhatsNew: ''
+  lastSeenWhatsNew: '',
+  agentManagementTools: 'ask'
 }

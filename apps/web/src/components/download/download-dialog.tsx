@@ -1,12 +1,10 @@
-import type {
-	PlaylistInfo,
-	VideoFormat,
-	VideoInfo,
-} from "@vidbee/downloader-core";
+import type { PlaylistInfo, VideoInfo } from "@vidbee/downloader-core";
 import {
 	ONE_CLICK_CONTAINER_OPTIONS,
 	type OneClickContainerOption,
+	type OneClickQualityPreset,
 } from "@vidbee/downloader-core/format-preferences";
+import { buildSingleVideoFormatSelector } from "@vidbee/downloader-core/format-selector";
 import { AddUrlPopover } from "@vidbee/ui/components/ui/add-url-popover";
 import { Button } from "@vidbee/ui/components/ui/button";
 import { Checkbox } from "@vidbee/ui/components/ui/checkbox";
@@ -42,48 +40,6 @@ import {
 	type SingleVideoState,
 } from "./single-video-download";
 
-const isMuxedVideoFormat = (format: VideoFormat | undefined): boolean =>
-	Boolean(
-		format?.vcodec &&
-			format.vcodec !== "none" &&
-			format.acodec &&
-			format.acodec !== "none",
-	);
-
-const resolvePreferredAudioExt = (
-	videoExt: string | undefined,
-): string | undefined => {
-	if (!videoExt) {
-		return undefined;
-	}
-
-	const normalizedExt = videoExt.toLowerCase();
-	if (normalizedExt === "mp4") {
-		return "m4a";
-	}
-	if (normalizedExt === "webm") {
-		return "webm";
-	}
-	return undefined;
-};
-
-const buildSingleVideoFormatSelector = (
-	formatId: string,
-	format: VideoFormat | undefined,
-): string => {
-	if (!format || isMuxedVideoFormat(format)) {
-		return formatId;
-	}
-
-	const preferredAudioExt = resolvePreferredAudioExt(format.ext);
-	if (!preferredAudioExt) {
-		return `${formatId}+bestaudio`;
-	}
-
-	// Prefer same-container audio and keep a fallback when not available.
-	return `${formatId}+bestaudio[ext=${preferredAudioExt}]/${formatId}+bestaudio`;
-};
-
 interface DownloadDialogProps {
 	onDownloadsChanged?: () => Promise<void> | void;
 }
@@ -115,6 +71,8 @@ export function DownloadDialog({ onDownloadsChanged }: DownloadDialogProps) {
 	const advancedOptionsId = useId();
 	const [playlistUrl, setPlaylistUrl] = useState("");
 	const [downloadType, setDownloadType] = useState<"video" | "audio">("video");
+	const [playlistQuality, setPlaylistQuality] =
+		useState<OneClickQualityPreset>();
 	const [playlistContainer, setPlaylistContainer] =
 		useState<OneClickContainerOption>();
 	const [startIndex, setStartIndex] = useState("1");
@@ -346,6 +304,7 @@ export function DownloadDialog({ onDownloadsChanged }: DownloadDialogProps) {
 	const {
 		addUrlPopoverOpen,
 		addUrlValue,
+		batchRequiresOneClick,
 		canConfirmAddUrl,
 		handleConfirmAddUrl,
 		handleOpenAddUrlPopover,
@@ -485,8 +444,14 @@ export function DownloadDialog({ onDownloadsChanged }: DownloadDialogProps) {
 
 			const format =
 				downloadType === "video"
-					? buildVideoFormatPreference(settings)
-					: buildAudioFormatPreference(settings);
+					? buildVideoFormatPreference({
+							...settings,
+							oneClickQuality: playlistQuality ?? settings.oneClickQuality,
+						})
+					: buildAudioFormatPreference({
+							...settings,
+							oneClickQuality: playlistQuality ?? settings.oneClickQuality,
+						});
 			const containerFormat =
 				downloadType === "video"
 					? (playlistContainer ?? settings.oneClickContainer)
@@ -522,6 +487,7 @@ export function DownloadDialog({ onDownloadsChanged }: DownloadDialogProps) {
 		playlistInfo,
 		selectedEntryIds,
 		playlistContainer,
+		playlistQuality,
 		computePlaylistRange,
 		downloadType,
 		settings,
@@ -634,8 +600,35 @@ export function DownloadDialog({ onDownloadsChanged }: DownloadDialogProps) {
 	const handleSingleVideoStateChange = useCallback(
 		(updates: Partial<SingleVideoState>) => {
 			setSingleVideoState((prev) => ({ ...prev, ...updates }));
+			if (
+				!(
+					settings.rememberLastAudioLanguage &&
+					updates.selectedAudioFormat &&
+					videoInfo?.formats
+				)
+			) {
+				return;
+			}
+			const selectedAudioFormat = videoInfo.formats.find(
+				(format) => format.formatId === updates.selectedAudioFormat,
+			);
+			const preferredAudioLanguage = selectedAudioFormat?.language?.trim();
+			if (
+				!(
+					preferredAudioLanguage &&
+					preferredAudioLanguage !== settings.preferredAudioLanguage
+				)
+			) {
+				return;
+			}
+			updateSettings({ preferredAudioLanguage });
 		},
-		[],
+		[
+			settings.preferredAudioLanguage,
+			settings.rememberLastAudioLanguage,
+			updateSettings,
+			videoInfo?.formats,
+		],
 	);
 
 	const selectedSingleFormat =
@@ -654,10 +647,13 @@ export function DownloadDialog({ onDownloadsChanged }: DownloadDialogProps) {
 						cancelLabel={t("download.cancel")}
 						confirmDisabled={!canConfirmAddUrl}
 						confirmLabel={t("download.fetch")}
+						description={t("download.enterUrlDescription")}
 						invalidMessage={
-							hasAddUrlValue && !canConfirmAddUrl
-								? t("errors.invalidUrl")
-								: undefined
+							batchRequiresOneClick
+								? t("errors.batchRequiresOneClick")
+								: hasAddUrlValue && !canConfirmAddUrl
+									? t("errors.invalidUrl")
+									: undefined
 						}
 						onCancel={() => {
 							setAddUrlPopoverOpen(false);
@@ -805,6 +801,8 @@ export function DownloadDialog({ onDownloadsChanged }: DownloadDialogProps) {
 				playlistTabContent={
 					<PlaylistDownload
 						advancedOptionsOpen={advancedOptionsOpen}
+						quality={playlistQuality ?? settings.oneClickQuality}
+						setQuality={setPlaylistQuality}
 						containerSelect={
 							downloadType === "video" && (
 								<DownloadContainerSelect
@@ -842,6 +840,7 @@ export function DownloadDialog({ onDownloadsChanged }: DownloadDialogProps) {
 						loading={loading}
 						onStateChange={handleSingleVideoStateChange}
 						oneClickQuality={settings.oneClickQuality}
+						preferredAudioLanguage={settings.preferredAudioLanguage}
 						state={singleVideoState}
 						videoInfo={videoInfo}
 					/>

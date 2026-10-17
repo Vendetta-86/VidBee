@@ -3,14 +3,16 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseBrowserCookiesSetting } from './browser-cookies-setting'
 import {
+  applyViaVidBeeFilename,
   DEFAULT_FILENAME_TEMPLATE,
   type FilenameStyle,
   resolveFilenameTemplate
 } from './filename-style'
 import type { OneClickContainerOption } from './format-preferences'
-import { resolveSubtitleLanguages } from './subtitle-languages'
+import { expandSubtitleLanguageAliases, resolveSubtitleLanguages } from './subtitle-languages'
 
 export interface YtDlpDownloadSettings {
+  skipCookieAuth?: boolean
   downloadPath?: string
   browserForCookies?: string
   cookiesPath?: string
@@ -43,6 +45,7 @@ export interface YtDlpDownloadOptions {
 }
 
 const YOUTUBE_HOST_SUFFIXES = ['youtube.com', 'youtu.be', 'youtube-nocookie.com'] as const
+const BILIBILI_AUTO_SUBTITLE_PREFIX = 'ai-'
 const YOUTUBE_SAFE_PLAYER_CLIENTS = 'default'
 export const VIDBEE_OUTPUT_PATH_PREFIX = '__VIDBEE_OUTPUT_PATH__:'
 const WINDOWS_FILENAME_TRIM_LENGTH = '120'
@@ -57,6 +60,37 @@ const DEFAULT_FRAGMENT_RETRIES = '30'
 const DEFAULT_EXTRACTOR_RETRIES = '10'
 const DEFAULT_RETRY_SLEEP = '2'
 const DEFAULT_SOCKET_TIMEOUT = '30'
+
+/**
+ * Resolve canonical, regional, and Bilibili AI subtitle language tags.
+ *
+ * yt-dlp exposes Bilibili AI captions as regular subtitle tracks such as `ai-zh`,
+ * so `--write-auto-subs` alone cannot select them. Common extractor aliases are
+ * always included; Bilibili AI aliases are added only while automatic captions are on.
+ */
+const resolveDownloadSubtitleLanguages = (
+  languages: readonly string[],
+  isBilibili: boolean,
+  writeAutoSubs: boolean
+): string[] => {
+  const resolved = new Map(
+    expandSubtitleLanguageAliases(languages).map((language) => [language.toLowerCase(), language])
+  )
+  if (isBilibili && writeAutoSubs) {
+    for (const language of languages) {
+      if (language.toLowerCase().startsWith(BILIBILI_AUTO_SUBTITLE_PREFIX)) {
+        continue
+      }
+      const primaryLanguage = language.split('-')[0]?.toLowerCase()
+      if (primaryLanguage) {
+        const automaticLanguage = `${BILIBILI_AUTO_SUBTITLE_PREFIX}${primaryLanguage}`
+        resolved.set(automaticLanguage, automaticLanguage)
+      }
+    }
+  }
+
+  return [...resolved.values()]
+}
 
 const appendNetworkResilienceArgs = (args: string[]): void => {
   args.push('--retries', DEFAULT_RETRIES)
@@ -254,22 +288,70 @@ export const normalizeBrowserCookiesSettingForYtDlp = (value?: string | null): s
   return profileName ? `${browser}:${profileName}` : browser
 }
 
+/** Return whether a host is the domain itself or one of its subdomains. */
+const hostMatchesDomain = (host: string, domain: string): boolean =>
+  host === domain || host.endsWith(`.${domain}`)
+
+/** Return whether a URL uses a Bilibili-owned video domain. */
 const isBilibiliUrl = (url: string): boolean => {
   try {
     const host = new URL(url).hostname.toLowerCase()
-    return host.includes('bilibili.com') || host.includes('b23.tv') || host.includes('bili.tv')
+    return ['bilibili.com', 'b23.tv', 'bili.tv'].some((domain) => hostMatchesDomain(host, domain))
   } catch {
     return false
   }
 }
 
+/** Return whether a URL uses a Twitch domain. */
 const isTwitchUrl = (url: string): boolean => {
   try {
     const host = new URL(url).hostname.toLowerCase()
-    return host.includes('twitch.tv')
+    return hostMatchesDomain(host, 'twitch.tv')
   } catch {
     return false
   }
+}
+
+/** Return whether a URL uses a TikTok domain. */
+const isTikTokUrl = (url: string): boolean => {
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return hostMatchesDomain(host, 'tiktok.com')
+  } catch {
+    return false
+  }
+}
+
+export type SubtitleDownloadSkipReason = 'auth-required' | 'automatic-captions-disabled'
+
+/**
+ * Explain why a requested video subtitle download must be skipped before yt-dlp starts.
+ *
+ * @param options Download source and media type.
+ * @param settings Effective runtime subtitle and authentication settings.
+ * @returns A stable skip reason, or null when subtitle arguments should be emitted.
+ */
+export const resolveSubtitleDownloadSkipReason = (
+  options: Pick<YtDlpDownloadOptions, 'type' | 'url'>,
+  settings: YtDlpDownloadSettings
+): SubtitleDownloadSkipReason | null => {
+  if (options.type !== 'video' || !(settings.downloadSubtitles ?? true)) {
+    return null
+  }
+  if (isTikTokUrl(options.url) && !(settings.writeAutoSubs ?? true)) {
+    return 'automatic-captions-disabled'
+  }
+
+  const browserForCookies = normalizeBrowserCookiesSettingForYtDlp(
+    settings.skipCookieAuth ? 'none' : settings.browserForCookies
+  )
+  const hasSubtitleAuth =
+    (browserForCookies && browserForCookies !== 'none') || Boolean(trim(settings.cookiesPath))
+  if ((isBilibiliUrl(options.url) || isTwitchUrl(options.url)) && !hasSubtitleAuth) {
+    return 'auth-required'
+  }
+
+  return null
 }
 
 export const resolvePathWithHome = (rawPath?: string | null): string | undefined => {
@@ -293,7 +375,7 @@ export const sanitizeFilenameTemplate = (
   template: string,
   fallbackTemplate = DEFAULT_FILENAME_TEMPLATE
 ): string => {
-  const trimmed = template.trim()
+  const trimmed = applyViaVidBeeFilename(template.trim())
   if (!trimmed) {
     return fallbackTemplate
   }
@@ -408,6 +490,52 @@ export const resolveVideoFormatSelector = (options: YtDlpDownloadOptions): strin
   return withBestFallback(`${format}+${audioFormat}`)
 }
 
+const UNSUPPORTED_THUMBNAIL_EMBED_ERROR = /supported filetypes for thumbnail embedding are/i
+
+export const THUMBNAIL_EMBED_UNSUPPORTED_LOG =
+  '[VidBee] Thumbnail embedding is unsupported for this container. The video was saved. Choose MP4 or MKV to embed cover art.'
+
+/**
+ * Thumbnail flags for one download.
+ *
+ * WebM cannot store cover art. `--embed-thumbnail` makes yt-dlp fail the
+ * download after the video is saved (GitHub issue #467). Write a separate
+ * thumbnail file instead. MP4, MKV, and Auto still embed the cover.
+ */
+export const resolveThumbnailDownloadArgs = (
+  type: YtDlpDownloadOptions['type'],
+  container: OneClickContainerOption | undefined,
+  embedThumbnail: boolean
+): string[] => {
+  if (!embedThumbnail) {
+    return ['--no-embed-thumbnail']
+  }
+  if (type === 'video' && container === 'webm') {
+    return ['--no-embed-thumbnail', '--write-thumbnail']
+  }
+  return ['--embed-thumbnail']
+}
+
+/**
+ * Return whether yt-dlp failed only because cover art cannot be embedded.
+ *
+ * Other ERROR lines still fail the download. Callers must also confirm a
+ * non-empty media file exists before treating the run as successful.
+ */
+export const isUnsupportedThumbnailEmbedOnlyFailure = (output: string): boolean => {
+  if (!UNSUPPORTED_THUMBNAIL_EMBED_ERROR.test(output)) {
+    return false
+  }
+  const errorLines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^ERROR:/i.test(line))
+  return (
+    errorLines.length > 0 &&
+    errorLines.every((line) => UNSUPPORTED_THUMBNAIL_EMBED_ERROR.test(line))
+  )
+}
+
 export const resolveAudioFormatSelector = (options: YtDlpDownloadOptions): string => {
   const format = options.format
 
@@ -431,8 +559,10 @@ export const buildDownloadArgs = (
   assertDownloadSourceUrl(options.url)
   validateDownloadTimeRange(options.startTime, options.endTime)
   const args: string[] = ['--no-playlist', '--no-mtime', '--encoding', 'utf-8']
+  const container: OneClickContainerOption | undefined =
+    options.type === 'video' ? (options.containerFormat ?? 'auto') : undefined
 
-  if (options.type === 'video') {
+  if (options.type === 'video' && container) {
     const formatSelector = resolveVideoFormatSelector(options)
     if (formatSelector) {
       args.push('-f', formatSelector)
@@ -447,7 +577,6 @@ export const buildDownloadArgs = (
     // GitHub issues #207 and #129: `auto` keeps the mp4/mkv fallback so
     // ffmpeg muxing failures (HEVC + Hi-Res audio on bilibili, webm
     // fragments on YouTube under proxies, etc.) do not abort the download.
-    const container = options.containerFormat ?? 'auto'
     if (container === 'auto') {
       args.push('--merge-output-format', 'mp4/mkv')
     } else if (container !== 'original') {
@@ -467,7 +596,7 @@ export const buildDownloadArgs = (
   }
 
   const downloadSubtitles = settings.downloadSubtitles ?? true
-  const subtitleLanguages = resolveSubtitleLanguages(
+  const selectedSubtitleLanguages = resolveSubtitleLanguages(
     settings.subtitleLanguages,
     settings.interfaceLanguage
   )
@@ -476,18 +605,23 @@ export const buildDownloadArgs = (
   const embedThumbnail = settings.embedThumbnail ?? false
   const embedMetadata = settings.embedMetadata ?? true
   const embedChapters = settings.embedChapters ?? true
-  const browserForCookies = normalizeBrowserCookiesSettingForYtDlp(settings.browserForCookies)
-  const cookiesPath = trim(settings.cookiesPath)
-  const hasSubtitleAuth =
-    (browserForCookies && browserForCookies !== 'none') || Boolean(cookiesPath)
+  const browserForCookies = normalizeBrowserCookiesSettingForYtDlp(
+    settings.skipCookieAuth ? 'none' : settings.browserForCookies
+  )
+  const cookiesPath = settings.skipCookieAuth ? '' : trim(settings.cookiesPath)
   const isBilibili = isBilibiliUrl(options.url)
+  const subtitleLanguages = resolveDownloadSubtitleLanguages(
+    selectedSubtitleLanguages,
+    isBilibili,
+    writeAutoSubs
+  )
   // GitHub issue #370: Twitch `rechat` 404s abort the VOD. GitHub issue #196:
-  // Bilibili subtitle fetch without cookies can fail and abort the video.
-  // Skip forced subtitle downloads on those sites unless cookies are present.
+  // Bilibili subtitle fetch without cookies can fail and abort the video. TikTok
+  // exposes its generated captions as normal subtitles, so the automatic-captions
+  // switch must gate subtitle fetching there instead of relying on yt-dlp's flag.
+  const subtitleSkipReason = resolveSubtitleDownloadSkipReason(options, settings)
   const shouldAttemptSubtitles =
-    options.type === 'video' &&
-    downloadSubtitles &&
-    (!(isBilibili || isTwitchUrl(options.url)) || hasSubtitleAuth)
+    options.type === 'video' && downloadSubtitles && subtitleSkipReason === null
   // GitHub issues #129, #196, #199, #291, #347: Bilibili lists danmaku as a
   // subtitle track (`danmaku.xml`). ffmpeg cannot mux XML into MP4/MKV and
   // aborts with `Invalid data found when processing input` after the video
@@ -497,26 +631,23 @@ export const buildDownloadArgs = (
   if (shouldAttemptSubtitles) {
     args.push('--sub-langs', subtitleLanguages.join(','))
     args.push('--sleep-subtitles', '1')
-    // `--embed-subs` only writes official / creator-uploaded captions.
-    // YouTube videos often have automatic captions and no official track, so
-    // also request those when the setting is on; otherwise the embed step
-    // has nothing to mux.
+    // `--embed-subs` does not request YouTube automatic captions. Ask for them
+    // only when that setting is on, or the embed step has nothing to mux.
     if (writeAutoSubs) {
       args.push('--write-auto-subs')
     } else {
       args.push('--no-write-auto-subs')
     }
-    if (shouldEmbedSubs) {
-      args.push('--embed-subs')
-    } else {
-      args.push('--write-subs')
-      args.push('--no-embed-subs')
-    }
+    // yt-dlp deletes the subtitle file after `--embed-subs` unless `--write-subs`
+    // is also set. Downloading subtitles means keep that sidecar; embedding is
+    // additional. GitHub issue #475.
+    args.push('--write-subs')
+    args.push(shouldEmbedSubs ? '--embed-subs' : '--no-embed-subs')
   } else {
     args.push('--no-write-subs', '--no-write-auto-subs', '--no-embed-subs')
   }
 
-  args.push(embedThumbnail ? '--embed-thumbnail' : '--no-embed-thumbnail')
+  args.push(...resolveThumbnailDownloadArgs(options.type, container, embedThumbnail))
   args.push(embedMetadata ? '--embed-metadata' : '--no-embed-metadata')
   args.push(embedChapters ? '--embed-chapters' : '--no-embed-chapters')
 
@@ -538,7 +669,15 @@ export const buildDownloadArgs = (
   args.push('--no-playlist-reverse')
   // GitHub issue #447: emit the final post-processed path without suppressing
   // progress output so the executor can stat the exact saved file.
-  args.push('--print', `after_move:${VIDBEE_OUTPUT_PATH_PREFIX}%(filepath)s`, '--no-quiet')
+  args.push(
+    '--print',
+    `after_move:${VIDBEE_OUTPUT_PATH_PREFIX}%(filepath)s`,
+    '--print',
+    'before_dl:VIDBEE_VISIBILITY:%(availability)s',
+    '--print',
+    'before_dl:VIDBEE_DURATION:%(duration)s',
+    '--no-quiet'
+  )
 
   appendPlatformFilenameSafetyArgs(args)
   appendNetworkResilienceArgs(args)
@@ -589,12 +728,14 @@ export const buildVideoInfoArgs = (
   // bounded retry/backoff policy as downloads, not only a socket timeout.
   appendMetadataNetworkResilienceArgs(args)
 
-  const browserForCookies = normalizeBrowserCookiesSettingForYtDlp(settings.browserForCookies)
+  const browserForCookies = normalizeBrowserCookiesSettingForYtDlp(
+    settings.skipCookieAuth ? 'none' : settings.browserForCookies
+  )
   if (browserForCookies && browserForCookies !== 'none') {
     args.push('--cookies-from-browser', browserForCookies)
   }
 
-  const cookiesPath = trim(settings.cookiesPath)
+  const cookiesPath = settings.skipCookieAuth ? '' : trim(settings.cookiesPath)
   if (cookiesPath) {
     args.push('--cookies', cookiesPath)
   }
@@ -605,6 +746,77 @@ export const buildVideoInfoArgs = (
   } else {
     // GitHub issue #294: an implicit user yt-dlp config can inject a strict
     // format selector into `-j` and make metadata discovery fail.
+    args.push('--ignore-config')
+    appendYouTubeSafeExtractorArgs(args, url)
+  }
+
+  if (jsRuntimeArgs.length > 0) {
+    args.push(...jsRuntimeArgs)
+  }
+
+  args.push(url)
+  return args
+}
+
+/**
+ * Build a skip-download yt-dlp argv that writes caption sidecars next to an info JSON.
+ *
+ * @param url Watch URL.
+ * @param outputTemplate yt-dlp `-o` template without an extension.
+ * @param settings Host cookies, proxy, and config.
+ * @param jsRuntimeArgs Active Desktop JS runtime flags.
+ * @param subtitleLanguages yt-dlp `--sub-langs` value.
+ */
+export const buildCaptionExtractArgs = (
+  url: string,
+  outputTemplate: string,
+  settings: YtDlpDownloadSettings,
+  jsRuntimeArgs: string[] = [],
+  subtitleLanguages = 'all'
+): string[] => {
+  assertDownloadSourceUrl(url)
+  const args = [
+    '--skip-download',
+    '--write-subs',
+    '--write-auto-subs',
+    '--write-info-json',
+    '--sub-langs',
+    subtitleLanguages || 'all',
+    '--sub-format',
+    'vtt/srt/ttml/best',
+    '--sleep-subtitles',
+    '1',
+    '--no-playlist',
+    '--no-warnings',
+    '--encoding',
+    'utf-8',
+    '-o',
+    outputTemplate
+  ]
+
+  const proxy = trim(settings.proxy)
+  if (proxy) {
+    args.push('--proxy', proxy)
+  }
+
+  appendMetadataNetworkResilienceArgs(args)
+
+  const browserForCookies = normalizeBrowserCookiesSettingForYtDlp(
+    settings.skipCookieAuth ? 'none' : settings.browserForCookies
+  )
+  if (browserForCookies && browserForCookies !== 'none') {
+    args.push('--cookies-from-browser', browserForCookies)
+  }
+
+  const cookiesPath = settings.skipCookieAuth ? '' : trim(settings.cookiesPath)
+  if (cookiesPath) {
+    args.push('--cookies', cookiesPath)
+  }
+
+  const configPath = resolvePathWithHome(settings.configPath)
+  if (configPath) {
+    args.push('--config-location', configPath)
+  } else {
     args.push('--ignore-config')
     appendYouTubeSafeExtractorArgs(args, url)
   }
@@ -634,12 +846,14 @@ export const buildPlaylistInfoArgs = (
 
   appendMetadataNetworkResilienceArgs(args)
 
-  const browserForCookies = normalizeBrowserCookiesSettingForYtDlp(settings.browserForCookies)
+  const browserForCookies = normalizeBrowserCookiesSettingForYtDlp(
+    settings.skipCookieAuth ? 'none' : settings.browserForCookies
+  )
   if (browserForCookies && browserForCookies !== 'none') {
     args.push('--cookies-from-browser', browserForCookies)
   }
 
-  const cookiesPath = trim(settings.cookiesPath)
+  const cookiesPath = settings.skipCookieAuth ? '' : trim(settings.cookiesPath)
   if (cookiesPath) {
     args.push('--cookies', cookiesPath)
   }

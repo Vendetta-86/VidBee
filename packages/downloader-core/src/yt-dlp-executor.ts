@@ -20,12 +20,19 @@ import type {
   TaskInput,
   TaskOutput
 } from '@vidbee/task-queue'
-import { virtualError } from '@vidbee/task-queue'
+import { classify, virtualError } from '@vidbee/task-queue'
 import { killProcessTree } from '@vidbee/task-queue/process'
 import YTDlpWrap from 'yt-dlp-wrap-plus'
 import type { OneClickContainerOption } from './format-preferences'
 import type { DownloadRuntimeSettings } from './types'
-import { buildDownloadArgs, formatYtDlpCommand, VIDBEE_OUTPUT_PATH_PREFIX } from './yt-dlp-args'
+import {
+  buildDownloadArgs,
+  formatYtDlpCommand,
+  isUnsupportedThumbnailEmbedOnlyFailure,
+  resolveSubtitleDownloadSkipReason,
+  THUMBNAIL_EMBED_UNSUPPORTED_LOG,
+  VIDBEE_OUTPUT_PATH_PREFIX
+} from './yt-dlp-args'
 import { DownloadProgressAggregator, type YtDlpProgressPayload } from './yt-dlp-progress'
 import { resolveYtDlpWrapCtor } from './yt-dlp-wrap'
 
@@ -108,6 +115,11 @@ export interface YtDlpExecutorOptions {
    * which passes raw argv unchanged.
    */
   buildArgs?: (input: TaskInput, defaultDownloadDir: string) => string[]
+  /**
+   * Optional host hook that can replace cookies/proxy settings immediately
+   * before yt-dlp starts, including retries.
+   */
+  prepareSettings?: (input: TaskInput) => Promise<DownloadRuntimeSettings | undefined>
   /** Grace period between SIGTERM and SIGKILL. Default 10s. */
   killGraceMs?: number
   /** Test seam. Defaults to Date.now. */
@@ -120,13 +132,13 @@ const DEFAULT_KILL_GRACE_MS = 10_000
 const STDOUT_TAIL_BYTES = 8 * 1024
 const STDERR_TAIL_BYTES = 8 * 1024
 const OUTPUT_PATH_SCAN_BYTES = 4 * 1024
-const PROCESSING_DETECT_PATTERNS = [
-  /\bMerging formats?\b/i,
-  /^\[Postprocess\]/m,
-  /\b(?:Embedding|Adding|Fixing|Converting)\b/i,
-  /\b(?:ExtractAudio|VideoConvertor|FFmpeg)\b/i
-]
+const PROCESSING_LINE =
+  /^\[(?:Merger|Postprocess|ExtractAudio|VideoConvertor|VideoRemuxer|EmbedThumbnail|EmbedSubtitle|Metadata|Fixup\w*|FFmpeg)\]/i
+const OUTPUT_LINE_END = /\r\n|\n|\r/
 const SUBTITLE_DOWNLOAD_ERROR = /Unable to download video subtitles for/i
+const SUBTITLE_DOWNLOAD_INFO = /\[info\][^\r\n]*Downloading subtitles:\s*([^\r\n]+)/i
+const SUBTITLE_UNAVAILABLE_INFO =
+  /There are no subtitles for the requested languages|video doesn't have subtitles/i
 const SUBTITLE_OPTIONS_WITH_VALUE = new Set(['--sleep-subtitles', '--sub-langs'])
 const SUBTITLE_TOGGLE_OPTIONS = new Set([
   '--embed-subs',
@@ -142,11 +154,55 @@ const SUBTITLE_FALLBACK_LOG =
 const FFMPEG_NOT_FOUND_ERROR =
   'ffmpeg/ffprobe not found. Use Desktop resources/ffmpeg, install in PATH, or set FFMPEG_PATH.'
 
+interface SubtitleOutcome {
+  languages?: string[]
+  status: NonNullable<TaskOutput['subtitleStatus']>
+}
+
+/** Extract the subtitle language tags yt-dlp selected from its info output. */
+const extractDownloadedSubtitleLanguages = (output: string): string[] => {
+  const rawLanguages = output.match(SUBTITLE_DOWNLOAD_INFO)?.[1]
+  if (!rawLanguages) {
+    return []
+  }
+  return rawLanguages
+    .split(',')
+    .map((language) => language.trim())
+    .filter(Boolean)
+}
+
+/** Resolve the persisted subtitle outcome from one completed yt-dlp run. */
+const resolveSubtitleOutcome = (input: {
+  downloadedLanguages: readonly string[]
+  fallbackAttempted: boolean
+  initialStatus?: SubtitleOutcome['status']
+  subtitlesRequested: boolean
+  unavailableSeen: boolean
+}): SubtitleOutcome | undefined => {
+  if (input.initialStatus) {
+    return { status: input.initialStatus }
+  }
+  if (input.fallbackAttempted) {
+    return { status: 'failed' }
+  }
+
+  if (input.downloadedLanguages.length > 0) {
+    return { languages: [...input.downloadedLanguages], status: 'downloaded' }
+  }
+  if (input.subtitlesRequested && input.unavailableSeen) {
+    return { status: 'unavailable' }
+  }
+  return undefined
+}
+
 export class YtDlpExecutor implements Executor {
   private readonly opts: Required<
-    Omit<YtDlpExecutorOptions, 'extraArgs' | 'buildArgs' | 'spawnFn' | 'defaultRuntimeSettings'>
+    Omit<
+      YtDlpExecutorOptions,
+      'extraArgs' | 'buildArgs' | 'spawnFn' | 'defaultRuntimeSettings' | 'prepareSettings'
+    >
   > &
-    Pick<YtDlpExecutorOptions, 'extraArgs' | 'buildArgs' | 'spawnFn'> & {
+    Pick<YtDlpExecutorOptions, 'extraArgs' | 'buildArgs' | 'spawnFn' | 'prepareSettings'> & {
       defaultRuntimeSettings: DownloadRuntimeSettings
     }
   private cachedYtDlp: YtDlpWrapInstance | null = null
@@ -160,6 +216,7 @@ export class YtDlpExecutor implements Executor {
       defaultRuntimeSettings: options.defaultRuntimeSettings ?? {},
       extraArgs: options.extraArgs,
       buildArgs: options.buildArgs,
+      prepareSettings: options.prepareSettings,
       killGraceMs: options.killGraceMs ?? DEFAULT_KILL_GRACE_MS,
       clock: options.clock ?? Date.now,
       spawnFn: options.spawnFn
@@ -170,6 +227,7 @@ export class YtDlpExecutor implements Executor {
     const stdoutTail = createTailBuffer(STDOUT_TAIL_BYTES)
     const stderrTail = createTailBuffer(STDERR_TAIL_BYTES)
     let postprocessSeen = false
+    const processingLines = { stdout: '', stderr: '' }
     let settled = false
     let cancelRequested = false
     let killTimer: NodeJS.Timeout | null = null
@@ -181,9 +239,26 @@ export class YtDlpExecutor implements Executor {
     let formatIdSeen: string | undefined
     let filePathSeen: string | undefined
     let outputPathProbe = ''
+    let subtitleSignalProbe = ''
+    let subtitleUnavailableSeen = false
+    let mediaDurationMs: number | null = null
+    let subtitleVisibility: 'public' | 'private' | 'unlisted' | undefined
+    const subtitleLanguagesSeen = new Set<string>()
     let progressAggregator = new DownloadProgressAggregator()
     let subtitleFallbackAttempted = false
     const canRetryWithoutSubtitles = !(ctx.input.rawArgs?.length || this.opts.buildArgs)
+
+    const captureProcessing = (text: string, stream: 'stdout' | 'stderr'): void => {
+      if (postprocessSeen || settled || cancelRequested) {
+        return
+      }
+      const lines = `${processingLines[stream]}${text}`.split(OUTPUT_LINE_END)
+      processingLines[stream] = (lines.pop() ?? '').slice(-OUTPUT_PATH_SCAN_BYTES)
+      if (lines.some((line) => PROCESSING_LINE.test(line.trimStart()))) {
+        postprocessSeen = true
+        events.onProcessing?.({ taskId: ctx.taskId, attemptId: ctx.attemptId })
+      }
+    }
 
     /** Preserve complete path signals even after the persisted log tail rolls over. */
     const captureOutputPath = (text: string): void => {
@@ -191,6 +266,25 @@ export class YtDlpExecutor implements Executor {
       const filePath = extractSavedFilePath(outputPathProbe)
       if (filePath) {
         filePathSeen = filePath
+      }
+    }
+
+    /** Preserve subtitle outcome signals even after the persisted log tail rolls over. */
+    const captureSubtitleSignals = (text: string): void => {
+      subtitleSignalProbe = `${subtitleSignalProbe}${text}`.slice(-OUTPUT_PATH_SCAN_BYTES)
+      const duration = subtitleSignalProbe.match(/VIDBEE_DURATION:(\d+(?:\.\d+)?)/)
+      if (duration) {
+        mediaDurationMs = Number(duration[1]) * 1000
+      }
+      const visibility = subtitleSignalProbe.match(/VIDBEE_VISIBILITY:(public|private|unlisted)\b/)
+      if (visibility) {
+        subtitleVisibility = visibility[1] as 'public' | 'private' | 'unlisted'
+      }
+      for (const language of extractDownloadedSubtitleLanguages(subtitleSignalProbe)) {
+        subtitleLanguagesSeen.add(language)
+      }
+      if (SUBTITLE_UNAVAILABLE_INFO.test(subtitleSignalProbe)) {
+        subtitleUnavailableSeen = true
       }
     }
 
@@ -206,340 +300,447 @@ export class YtDlpExecutor implements Executor {
       events.onFinish(e)
     }
 
-    let args: string[]
-    try {
-      args = this.buildArgsFor(ctx.input)
-    } catch (err) {
-      const error = virtualError('unknown', String(err instanceof Error ? err.message : err))
-      finishOnce({
-        taskId: ctx.taskId,
-        attemptId: ctx.attemptId,
-        result: { type: 'error', error, exitCode: null },
-        closedAt: this.opts.clock(),
-        stdoutTail: '',
-        stderrTail: String(err instanceof Error ? err.message : err)
-      })
-      return makeNoopRun()
-    }
-
-    const ffmpegLocation = this.opts.resolveFfmpegLocation()
-    if (!ffmpegLocation) {
-      finishOnce({
-        taskId: ctx.taskId,
-        attemptId: ctx.attemptId,
-        result: {
-          type: 'error',
-          error: virtualError('binary-missing', FFMPEG_NOT_FOUND_ERROR),
-          exitCode: null
-        },
-        closedAt: this.opts.clock(),
-        stdoutTail: '',
-        stderrTail: FFMPEG_NOT_FOUND_ERROR
-      })
-      return makeNoopRun()
-    }
-    insertFfmpegLocation(args, ffmpegLocation)
-
-    const controller = new AbortController()
-    let ytDlpPath: string
-    try {
-      ytDlpPath = this.opts.resolveYtDlpPath()
-    } catch (err) {
-      finishOnce({
-        taskId: ctx.taskId,
-        attemptId: ctx.attemptId,
-        result: {
-          type: 'error',
-          error: virtualError('binary-missing', String(err instanceof Error ? err.message : err)),
-          exitCode: null
-        },
-        closedAt: this.opts.clock(),
-        stdoutTail: '',
-        stderrTail: String(err instanceof Error ? err.message : err)
-      })
-      return makeNoopRun()
-    }
-
-    /** Record stdout signals used for progress, output discovery, and format diagnostics. */
-    const pumpStdoutPostprocess = (chunk: Buffer): void => {
-      const text = chunk.toString()
-      stdoutTail.append(text)
-      captureOutputPath(text)
-      if (!postprocessSeen && hasPostprocessSignal(text)) {
-        postprocessSeen = true
+    const launch = (settingsOverride?: DownloadRuntimeSettings): ExecutorRun => {
+      if (cancelRequested || settled) {
+        return makeNoopRun()
       }
-      const fid = extractFormatId(text)
-      if (fid) {
-        formatIdSeen = fid
-      }
-    }
-
-    /** Record stderr and forward it to the task log stream. */
-    const pumpStderrPostprocess = (chunk: Buffer): void => {
-      const text = chunk.toString()
-      stderrTail.append(text)
-      captureOutputPath(text)
-      if (!postprocessSeen && hasPostprocessSignal(text)) {
-        postprocessSeen = true
-      }
-      events.onStd({
-        taskId: ctx.taskId,
-        attemptId: ctx.attemptId,
-        stream: 'stderr',
-        line: text.replace(/\r?\n$/, '')
-      })
-    }
-
-    /** Spawn one yt-dlp child with the shared cancellation signal. */
-    const spawnProcess = (processArgs: string[]): YtDlpExecProcess =>
-      this.opts.spawnFn
-        ? this.opts.spawnFn(ytDlpPath, processArgs, controller.signal)
-        : this.getYtDlp(ytDlpPath).exec(processArgs, { signal: controller.signal })
-
-    /** Finish a successful child after verifying the output file on disk. */
-    const finishSuccessfulProcess = (closedAt: number): void => {
-      const stdout = stdoutTail.read()
-      const stderr = stderrTail.read()
-      const filePath = filePathSeen ?? extractSavedFilePath(`${stdout}\n${stderr}`) ?? ''
-      // Stat the produced file so the kernel's processing→completed guard
-      // (size > 0) sees real bytes and downstream projections (history UI,
-      // SSE events, CLI envelope) report the correct file size. statSync
-      // here is the safest place: yt-dlp has just exited 0 so the file is
-      // closed and on disk.
-      let realSize = 0
-      if (filePath) {
-        try {
-          if (existsSync(filePath)) {
-            realSize = statSync(filePath).size
-          }
-        } catch {
-          // ignore — kernel guard will demote to failed('output-missing')
-        }
-      }
-      const output: TaskOutput = {
-        filePath,
-        size: realSize,
-        durationMs: null,
-        sha256: null,
-        // Prefer the streaming sniff (captures even if pushed out of the
-        // tail buffer); fall back to a tail re-scan when running with
-        // tiny test fixtures whose entire run fits in 8KB.
-        formatId: formatIdSeen ?? extractFormatId(stdout) ?? null
-      }
-      finishOnce({
-        taskId: ctx.taskId,
-        attemptId: ctx.attemptId,
-        result: { type: 'success', output },
-        closedAt,
-        stdoutTail: stdout,
-        stderrTail: stderr
-      })
-    }
-
-    /** Finish one uncaught child-process error without waiting for close. */
-    const finishProcessError = (err: Error): void => {
-      const closedAt = this.opts.clock()
-      if (cancelRequested) {
+      let args: string[]
+      try {
+        args = this.buildArgsFor(ctx.input, settingsOverride)
+      } catch (err) {
+        const error = virtualError('unknown', String(err instanceof Error ? err.message : err))
         finishOnce({
           taskId: ctx.taskId,
           attemptId: ctx.attemptId,
-          result: { type: 'cancelled' },
-          closedAt,
-          stdoutTail: stdoutTail.read(),
-          stderrTail: stderrTail.read()
+          result: { type: 'error', error, exitCode: null },
+          closedAt: this.opts.clock(),
+          stdoutTail: '',
+          stderrTail: String(err instanceof Error ? err.message : err)
         })
-        return
+        return makeNoopRun()
       }
-      const error = virtualError('unknown', err.message)
-      finishOnce({
-        taskId: ctx.taskId,
-        attemptId: ctx.attemptId,
-        result: { type: 'error', error, exitCode: null },
-        closedAt,
-        stdoutTail: stdoutTail.read(),
-        stderrTail: stderrTail.read()
-      })
-    }
+      const subtitlesRequested = hasSubtitleDownloadArgs(args)
+      const initialSubtitleStatus = this.resolveInitialSubtitleStatus(ctx.input)
 
-    /** Bind one process, transparently replacing subtitle-only failures once. */
-    const bindProcess = (target: YtDlpExecProcess, processArgs: string[]): void => {
-      let processStderr = ''
+      const ffmpegLocation = this.opts.resolveFfmpegLocation()
+      if (!ffmpegLocation) {
+        finishOnce({
+          taskId: ctx.taskId,
+          attemptId: ctx.attemptId,
+          result: {
+            type: 'error',
+            error: virtualError('binary-missing', FFMPEG_NOT_FOUND_ERROR),
+            exitCode: null
+          },
+          closedAt: this.opts.clock(),
+          stdoutTail: '',
+          stderrTail: FFMPEG_NOT_FOUND_ERROR
+        })
+        return makeNoopRun()
+      }
+      insertFfmpegLocation(args, ffmpegLocation)
 
-      target.ytDlpProcess?.stdout?.on('data', (chunk: Buffer) => {
-        if (target !== proc) {
-          return
+      const controller = new AbortController()
+      let ytDlpPath: string
+      try {
+        ytDlpPath = this.opts.resolveYtDlpPath()
+      } catch (err) {
+        finishOnce({
+          taskId: ctx.taskId,
+          attemptId: ctx.attemptId,
+          result: {
+            type: 'error',
+            error: virtualError('binary-missing', String(err instanceof Error ? err.message : err)),
+            exitCode: null
+          },
+          closedAt: this.opts.clock(),
+          stdoutTail: '',
+          stderrTail: String(err instanceof Error ? err.message : err)
+        })
+        return makeNoopRun()
+      }
+
+      /** Record stdout signals used for progress, output discovery, and format diagnostics. */
+      const pumpStdoutPostprocess = (chunk: Buffer): void => {
+        const text = chunk.toString()
+        stdoutTail.append(text)
+        captureOutputPath(text)
+        captureSubtitleSignals(text)
+        captureProcessing(text, 'stdout')
+        const fid = extractFormatId(text)
+        if (fid) {
+          formatIdSeen = fid
         }
-        pumpStdoutPostprocess(chunk)
+      }
+
+      /** Record stderr and forward it to the task log stream. */
+      const pumpStderrPostprocess = (chunk: Buffer): void => {
+        const text = chunk.toString()
+        stderrTail.append(text)
+        captureOutputPath(text)
+        captureSubtitleSignals(text)
+        captureProcessing(text, 'stderr')
         events.onStd({
           taskId: ctx.taskId,
           attemptId: ctx.attemptId,
-          stream: 'stdout',
-          line: chunk.toString().replace(/\r?\n$/, '')
+          stream: 'stderr',
+          line: text.replace(/\r?\n$/, '')
         })
-      })
+      }
 
-      target.ytDlpProcess?.stderr?.on('data', (chunk: Buffer) => {
-        if (target === proc) {
-          processStderr = `${processStderr}${chunk.toString()}`.slice(-STDERR_TAIL_BYTES)
-          pumpStderrPostprocess(chunk)
-        }
-      })
+      /** Spawn one yt-dlp child with the shared cancellation signal. */
+      const spawnProcess = (processArgs: string[]): YtDlpExecProcess =>
+        this.opts.spawnFn
+          ? this.opts.spawnFn(ytDlpPath, processArgs, controller.signal)
+          : this.getYtDlp(ytDlpPath).exec(processArgs, { signal: controller.signal })
 
-      target.on('progress', (payload: YtDlpProgressPayload) => {
-        if (target !== proc) {
-          return
-        }
-        const progress = progressAggregator.apply(payload)
-        if (!progress) {
-          return
-        }
-        events.onProgress({
-          taskId: ctx.taskId,
-          attemptId: ctx.attemptId,
-          progress,
-          enteredProcessing: postprocessSeen
-        })
-      })
-
-      target.on('close', (code: number | null) => {
-        if (target !== proc || settled) {
-          return
-        }
-        const closedAt = this.opts.clock()
+      /** Finish a successful child after verifying the output file on disk. */
+      const finishSuccessfulProcess = (closedAt: number): void => {
         const stdout = stdoutTail.read()
         const stderr = stderrTail.read()
+        const filePath = filePathSeen ?? extractSavedFilePath(`${stdout}\n${stderr}`) ?? ''
+        // Stat the produced file so the kernel's processing→completed guard
+        // (size > 0) sees real bytes and downstream projections (history UI,
+        // SSE events, CLI envelope) report the correct file size. statSync
+        // here is the safest place: yt-dlp has just exited 0 so the file is
+        // closed and on disk.
+        let realSize = 0
+        if (filePath) {
+          try {
+            if (existsSync(filePath)) {
+              realSize = statSync(filePath).size
+            }
+          } catch {
+            // ignore — kernel guard will demote to failed('output-missing')
+          }
+        }
+        const output: TaskOutput = {
+          filePath,
+          size: realSize,
+          durationMs: mediaDurationMs,
+          sha256: null,
+          // Prefer the streaming sniff (captures even if pushed out of the
+          // tail buffer); fall back to a tail re-scan when running with
+          // tiny test fixtures whose entire run fits in 8KB.
+          formatId: formatIdSeen ?? extractFormatId(stdout) ?? null
+        }
+        const subtitleOutcome = resolveSubtitleOutcome({
+          downloadedLanguages: [...subtitleLanguagesSeen],
+          fallbackAttempted: subtitleFallbackAttempted,
+          initialStatus: initialSubtitleStatus,
+          subtitlesRequested,
+          unavailableSeen: subtitleUnavailableSeen
+        })
+        if (subtitleOutcome) {
+          output.subtitleStatus = subtitleOutcome.status
+          output.subtitleAcquisition = {
+            id: ctx.attemptId,
+            acquiredAt: closedAt,
+            visibility: subtitleVisibility,
+            credentialsUsed: args.includes('--ignore-config')
+              ? args.some((argument) =>
+                  /^(?:--cookies|--cookies-from-browser|--username|--password|--netrc|--netrc-location|--netrc-cmd|--add-header)(?:=|$)/.test(
+                    argument
+                  )
+                )
+              : undefined
+          }
+          if (subtitleOutcome.languages) {
+            output.subtitleLanguages = subtitleOutcome.languages
+          }
+        }
+        finishOnce({
+          taskId: ctx.taskId,
+          attemptId: ctx.attemptId,
+          result: { type: 'success', output },
+          closedAt,
+          stdoutTail: stdout,
+          stderrTail: stderr
+        })
+      }
+
+      /** Finish one uncaught child-process error without waiting for close. */
+      const finishProcessError = (err: Error): void => {
+        const closedAt = this.opts.clock()
         if (cancelRequested) {
           finishOnce({
             taskId: ctx.taskId,
             attemptId: ctx.attemptId,
             result: { type: 'cancelled' },
             closedAt,
-            stdoutTail: stdout,
-            stderrTail: stderr
+            stdoutTail: stdoutTail.read(),
+            stderrTail: stderrTail.read()
           })
           return
         }
-        if (code === 0) {
-          finishSuccessfulProcess(closedAt)
-          return
-        }
-        if (
-          !subtitleFallbackAttempted &&
-          canRetryWithoutSubtitles &&
-          hasSubtitleDownloadArgs(processArgs) &&
-          SUBTITLE_DOWNLOAD_ERROR.test(processStderr)
-        ) {
-          subtitleFallbackAttempted = true
-          stderrTail.append(`${SUBTITLE_FALLBACK_LOG}\n`)
-          events.onStd({
-            taskId: ctx.taskId,
-            attemptId: ctx.attemptId,
-            stream: 'stderr',
-            line: SUBTITLE_FALLBACK_LOG
-          })
-          progressAggregator = new DownloadProgressAggregator()
-          postprocessSeen = false
-          try {
-            const fallbackArgs = withoutSubtitleDownloadArgs(processArgs)
-            proc = spawnProcess(fallbackArgs)
-            bindProcess(proc, fallbackArgs)
-          } catch (err) {
-            finishProcessError(err instanceof Error ? err : new Error(String(err)))
-          }
-          return
-        }
-        const error = classifyYtDlpExit(code, processStderr || stderr)
+        const error = classifyYtDlpExit(null, `${stderrTail.read()}\n${err.message}`)
         finishOnce({
           taskId: ctx.taskId,
           attemptId: ctx.attemptId,
-          result: { type: 'error', error, exitCode: code ?? null },
+          result: { type: 'error', error, exitCode: null },
           closedAt,
-          stdoutTail: stdout,
-          stderrTail: stderr
+          stdoutTail: stdoutTail.read(),
+          stderrTail: stderrTail.read()
         })
-      })
+      }
 
-      target.on('error', (err: Error) => {
-        if (target === proc) {
-          finishProcessError(err)
-        }
-      })
-    }
+      /** Bind one process, transparently replacing subtitle-only failures once. */
+      const bindProcess = (target: YtDlpExecProcess, processArgs: string[]): void => {
+        let processStderr = ''
 
-    try {
-      proc = spawnProcess(args)
-    } catch (err) {
-      finishOnce({
+        target.ytDlpProcess?.stdout?.on('data', (chunk: Buffer) => {
+          if (target !== proc) {
+            return
+          }
+          pumpStdoutPostprocess(chunk)
+          events.onStd({
+            taskId: ctx.taskId,
+            attemptId: ctx.attemptId,
+            stream: 'stdout',
+            line: chunk.toString().replace(/\r?\n$/, '')
+          })
+        })
+
+        target.ytDlpProcess?.stderr?.on('data', (chunk: Buffer) => {
+          if (target === proc) {
+            processStderr = `${processStderr}${chunk.toString()}`.slice(-STDERR_TAIL_BYTES)
+            pumpStderrPostprocess(chunk)
+          }
+        })
+
+        target.on('progress', (payload: YtDlpProgressPayload) => {
+          if (target !== proc) {
+            return
+          }
+          const progress = progressAggregator.apply(payload)
+          if (!progress) {
+            return
+          }
+          events.onProgress({
+            taskId: ctx.taskId,
+            attemptId: ctx.attemptId,
+            progress,
+            enteredProcessing: postprocessSeen
+          })
+        })
+
+        target.on('close', (code: number | null) => {
+          if (target !== proc || settled) {
+            return
+          }
+          const closedAt = this.opts.clock()
+          const stdout = stdoutTail.read()
+          const stderr = stderrTail.read()
+          if (cancelRequested) {
+            finishOnce({
+              taskId: ctx.taskId,
+              attemptId: ctx.attemptId,
+              result: { type: 'cancelled' },
+              closedAt,
+              stdoutTail: stdout,
+              stderrTail: stderr
+            })
+            return
+          }
+          if (code === 0) {
+            finishSuccessfulProcess(closedAt)
+            return
+          }
+          const savedPath = filePathSeen ?? extractSavedFilePath(`${stdout}\n${stderr}`)
+          // GitHub issue #467: cover embedding can fail after a valid WebM
+          // (or other unsupported container) is already on disk. Keep that
+          // media file instead of reporting the download as failed.
+          if (
+            hasNonEmptyFile(savedPath) &&
+            isUnsupportedThumbnailEmbedOnlyFailure(processStderr || stderr)
+          ) {
+            stderrTail.append(`\n${THUMBNAIL_EMBED_UNSUPPORTED_LOG}\n`)
+            finishSuccessfulProcess(closedAt)
+            return
+          }
+          if (
+            !subtitleFallbackAttempted &&
+            canRetryWithoutSubtitles &&
+            hasSubtitleDownloadArgs(processArgs) &&
+            SUBTITLE_DOWNLOAD_ERROR.test(processStderr)
+          ) {
+            subtitleFallbackAttempted = true
+            stderrTail.append(`${SUBTITLE_FALLBACK_LOG}\n`)
+            events.onStd({
+              taskId: ctx.taskId,
+              attemptId: ctx.attemptId,
+              stream: 'stderr',
+              line: SUBTITLE_FALLBACK_LOG
+            })
+            progressAggregator = new DownloadProgressAggregator()
+            postprocessSeen = false
+            processingLines.stdout = ''
+            processingLines.stderr = ''
+            try {
+              const fallbackArgs = withoutSubtitleDownloadArgs(processArgs)
+              proc = spawnProcess(fallbackArgs)
+              bindProcess(proc, fallbackArgs)
+            } catch (err) {
+              finishProcessError(err instanceof Error ? err : new Error(String(err)))
+            }
+            return
+          }
+          const error = classifyYtDlpExit(code, processStderr || stderr)
+          finishOnce({
+            taskId: ctx.taskId,
+            attemptId: ctx.attemptId,
+            result: { type: 'error', error, exitCode: code ?? null },
+            closedAt,
+            stdoutTail: stdout,
+            stderrTail: stderr
+          })
+        })
+
+        target.on('error', (err: Error) => {
+          if (target === proc) {
+            finishProcessError(err)
+          }
+        })
+      }
+
+      try {
+        proc = spawnProcess(args)
+      } catch (err) {
+        finishOnce({
+          taskId: ctx.taskId,
+          attemptId: ctx.attemptId,
+          result: {
+            type: 'error',
+            error: virtualError('unknown', String(err instanceof Error ? err.message : err)),
+            exitCode: null
+          },
+          closedAt: this.opts.clock(),
+          stdoutTail: stdoutTail.read(),
+          stderrTail: stderrTail.read()
+        })
+        return makeNoopRun()
+      }
+
+      // Emit onSpawn once for the executor attempt. A subtitle-only fallback is
+      // an internal recovery and keeps the same task attempt and cancellation handle.
+      const pid = proc.ytDlpProcess?.pid ?? -1
+      events.onSpawn({
         taskId: ctx.taskId,
         attemptId: ctx.attemptId,
-        result: {
-          type: 'error',
-          error: virtualError('unknown', String(err instanceof Error ? err.message : err)),
-          exitCode: null
-        },
-        closedAt: this.opts.clock(),
-        stdoutTail: stdoutTail.read(),
-        stderrTail: stderrTail.read()
+        pid,
+        pidStartedAt: null,
+        kind: 'yt-dlp',
+        spawnedAt: this.opts.clock()
       })
-      return makeNoopRun()
-    }
+      bindProcess(proc, args)
 
-    // Emit onSpawn once for the executor attempt. A subtitle-only fallback is
-    // an internal recovery and keeps the same task attempt and cancellation handle.
-    const pid = proc.ytDlpProcess?.pid ?? -1
-    events.onSpawn({
-      taskId: ctx.taskId,
-      attemptId: ctx.attemptId,
-      pid,
-      pidStartedAt: null,
-      kind: 'yt-dlp',
-      spawnedAt: this.opts.clock()
-    })
-    bindProcess(proc, args)
-
-    const cancel = async (timeout?: number): Promise<void> => {
-      if (settled) {
-        return
-      }
-      cancelRequested = true
-      const grace = timeout ?? this.opts.killGraceMs
-      try {
-        controller.abort()
-      } catch {
-        /* noop */
-      }
-      try {
-        killProcessTree(proc?.ytDlpProcess?.pid, 'SIGTERM')
-      } catch {
-        /* noop */
-      }
-      if (killTimer) {
-        clearTimeout(killTimer)
-      }
-      if (grace > 0) {
-        killTimer = setTimeout(() => {
+      const cancel = async (timeout?: number): Promise<void> => {
+        if (settled) {
+          return
+        }
+        cancelRequested = true
+        const grace = timeout ?? this.opts.killGraceMs
+        try {
+          controller.abort()
+        } catch {
+          /* noop */
+        }
+        try {
+          killProcessTree(proc?.ytDlpProcess?.pid, 'SIGTERM')
+        } catch {
+          /* noop */
+        }
+        if (killTimer) {
+          clearTimeout(killTimer)
+        }
+        if (grace > 0) {
+          killTimer = setTimeout(() => {
+            try {
+              killProcessTree(proc?.ytDlpProcess?.pid, 'SIGKILL')
+            } catch {
+              /* noop */
+            }
+          }, grace)
+        } else {
           try {
             killProcessTree(proc?.ytDlpProcess?.pid, 'SIGKILL')
           } catch {
             /* noop */
           }
-        }, grace)
-      } else {
-        try {
-          killProcessTree(proc?.ytDlpProcess?.pid, 'SIGKILL')
-        } catch {
-          /* noop */
         }
+      }
+
+      return {
+        cancel,
+        pause: () => cancel(this.opts.killGraceMs)
       }
     }
 
+    if (!this.opts.prepareSettings) {
+      return launch()
+    }
+
+    let launched: ExecutorRun | undefined
+    const pendingCancel = async (timeout?: number): Promise<void> => {
+      cancelRequested = true
+      if (launched) {
+        await launched.cancel(timeout)
+      }
+    }
+    void this.opts.prepareSettings(ctx.input).then(
+      (prepared) => {
+        if (cancelRequested || settled) {
+          return
+        }
+        launched = launch(prepared ?? undefined)
+      },
+      (err) => {
+        const message = String(err instanceof Error ? err.message : err)
+        finishOnce({
+          taskId: ctx.taskId,
+          attemptId: ctx.attemptId,
+          result: { type: 'error', error: virtualError('unknown', message), exitCode: null },
+          closedAt: this.opts.clock(),
+          stdoutTail: '',
+          stderrTail: message
+        })
+      }
+    )
     return {
-      cancel,
-      pause: () => cancel(this.opts.killGraceMs)
+      cancel: pendingCancel,
+      pause: () => pendingCancel(this.opts.killGraceMs)
     }
   }
 
-  private buildArgsFor(input: TaskInput): string[] {
+  /** Merge host defaults with per-task runtime setting overrides. */
+  private resolveRuntimeSettings(
+    input: TaskInput,
+    override?: DownloadRuntimeSettings
+  ): DownloadRuntimeSettings {
+    const opts = (input.options ?? {}) as YtDlpTaskOptions
+    return {
+      ...this.opts.defaultRuntimeSettings,
+      ...(opts.settings ?? {}),
+      ...(override ?? {})
+    }
+  }
+
+  /** Detect user-visible subtitle skips that happen before yt-dlp starts. */
+  private resolveInitialSubtitleStatus(input: TaskInput): TaskOutput['subtitleStatus'] | undefined {
+    if (input.rawArgs?.length || this.opts.buildArgs) {
+      return undefined
+    }
+    const opts = (input.options ?? {}) as YtDlpTaskOptions
+    const type = opts.type ?? (input.kind === 'audio' ? 'audio' : 'video')
+    const skipReason = resolveSubtitleDownloadSkipReason(
+      { type, url: input.url },
+      this.resolveRuntimeSettings(input)
+    )
+    return skipReason === 'auth-required' ? 'skipped-auth' : undefined
+  }
+
+  /** Build the final yt-dlp arguments for one task input. */
+  private buildArgsFor(input: TaskInput, settingsOverride?: DownloadRuntimeSettings): string[] {
     if (this.opts.buildArgs) {
       return this.opts.buildArgs(input, this.opts.defaultDownloadDir)
     }
@@ -548,10 +749,7 @@ export class YtDlpExecutor implements Executor {
     }
     const opts = (input.options ?? {}) as YtDlpTaskOptions
     const type = opts.type ?? (input.kind === 'audio' ? 'audio' : 'video')
-    const settings: DownloadRuntimeSettings = {
-      ...this.opts.defaultRuntimeSettings,
-      ...(opts.settings ?? {})
-    }
+    const settings = this.resolveRuntimeSettings(input, settingsOverride)
     const downloadPath =
       opts.customDownloadPath?.trim() ||
       settings.downloadPath?.trim() ||
@@ -655,8 +853,16 @@ function insertFfmpegLocation(args: string[], ffmpegLocation: string): void {
   }
 }
 
-function hasPostprocessSignal(text: string): boolean {
-  return PROCESSING_DETECT_PATTERNS.some((re) => re.test(text))
+/** Return whether a produced media file is present and non-empty. */
+function hasNonEmptyFile(filePath: string | undefined): boolean {
+  if (!filePath) {
+    return false
+  }
+  try {
+    return existsSync(filePath) && statSync(filePath).size > 0
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -724,38 +930,9 @@ function extractSavedFilePath(rawLog: string): string | undefined {
   return undefined
 }
 
-/**
- * Map a yt-dlp non-zero exit + stderr to a ClassifiedError. The kernel's
- * own classifier handles structured retry decisions; we only need to seed
- * with a sensible category.
- */
+/** Use the queue's canonical classifier for both process errors and non-zero exits. */
 function classifyYtDlpExit(exitCode: number | null, stderr: string): ClassifiedError {
-  const txt = stderr.toLowerCase()
-  if (/(http error 429|too many requests|rate.?limit)/.test(txt)) {
-    return virtualError('http-429', stderr || `yt-dlp exited ${exitCode}`)
-  }
-  if (/(login required|requires (?:cookies|authentication)|sign in to confirm)/.test(txt)) {
-    return virtualError('auth-required', stderr || `yt-dlp exited ${exitCode}`)
-  }
-  if (/(not available in your country|geo.?restricted|geographic)/.test(txt)) {
-    return virtualError('geo-blocked', stderr || `yt-dlp exited ${exitCode}`)
-  }
-  if (/(video unavailable|not found|404)/.test(txt)) {
-    return virtualError('not-found', stderr || `yt-dlp exited ${exitCode}`)
-  }
-  if (/(no space left|disk full|enospc)/.test(txt)) {
-    return virtualError('disk-full', stderr || `yt-dlp exited ${exitCode}`)
-  }
-  if (/(permission denied|eacces)/.test(txt)) {
-    return virtualError('permission-denied', stderr || `yt-dlp exited ${exitCode}`)
-  }
-  if (/(ffmpeg|ffprobe)/.test(txt)) {
-    return virtualError('ffmpeg', stderr || `yt-dlp exited ${exitCode}`)
-  }
-  if (/(network|timeout|econnreset|enotfound|ehostunreach)/.test(txt)) {
-    return virtualError('network-transient', stderr || `yt-dlp exited ${exitCode}`)
-  }
-  return virtualError('unknown', stderr || `yt-dlp exited with code ${exitCode ?? -1}`)
+  return classify({ exitCode, stderr: stderr || `yt-dlp exited with code ${exitCode ?? -1}` })
 }
 
 interface TailBuffer {

@@ -5,22 +5,14 @@
  * into, and bridges subscription items into the shared task-queue (priority
  * 10, group-keyed by subscription id, kind 'subscription-item').
  *
- * Storage: a dedicated `subscriptions.db` (sibling of `task-queue.db`).
+ * Storage: the unified `vidbee.db` shared with the task queue and transcripts.
  * Sharing the SQLite file with Desktop is what makes the leader-election
  * meaningful; on standalone API deployments the API simply always wins the
  * lease and runs feed-checks itself.
  *
- * Operational env vars:
- *   VIDBEE_SUBSCRIPTIONS_DB    – override the default subscriptions.db path
- *
- * Existing task-queue env vars (`VIDBEE_DOWNLOAD_DIR`,
- * `VIDBEE_PERSIST_QUEUE`, …) are reused via the shared host wiring.
+ * Existing task-queue env vars (`VIDBEE_DOWNLOAD_DIR`, `VIDBEE_DB`, …) are
+ * reused via the shared host wiring.
  */
-import fs from 'node:fs'
-import { createRequire } from 'node:module'
-import path from 'node:path'
-
-import { applySubscriptionsMigrations } from '@vidbee/db/subscriptions'
 import { log } from '@vidbee/logger'
 import {
   createSqliteMetaStore,
@@ -28,28 +20,14 @@ import {
   RssParserFeedFetcher,
   SubscriptionsApi
 } from '@vidbee/subscriptions-core'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
 
-import { apiDefaultDownloadDir, taskQueue } from './task-queue-host'
+import { getDatabaseConnection } from './database'
+import { taskQueue } from './task-queue-host'
 import { toWebDownloadRuntimeSettings, webSettingsStore } from './web-settings-store'
-
-const require = createRequire(import.meta.url)
-
-const trimEnv = (name: string): string | undefined => {
-  const v = process.env[name]?.trim()
-  return v && v.length > 0 ? v : undefined
-}
-
-const resolveDbPath = (): string => {
-  const override = trimEnv('VIDBEE_SUBSCRIPTIONS_DB')
-  if (override) {
-    return override
-  }
-  return path.join(apiDefaultDownloadDir, '.vidbee', 'subscriptions.db')
-}
 
 let api: SubscriptionsApi | null = null
 let started = false
+let removeTaskListener: (() => void) | null = null
 
 /**
  * Open (or reuse) the singleton SubscriptionsApi for the API host.
@@ -62,19 +40,7 @@ export const getApiSubscriptions = (): SubscriptionsApi => {
   if (api) {
     return api
   }
-  const dbPath = resolveDbPath()
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true })
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const Database = require('better-sqlite3') as typeof import('better-sqlite3')
-  const sqlite = new Database(dbPath, { timeout: 5000 })
-  sqlite.pragma('journal_mode = WAL')
-  sqlite.pragma('foreign_keys = ON')
-  const subscriptionCols = sqlite.prepare('PRAGMA table_info(subscriptions)').all() as Array<{
-    name?: string
-  }>
-  const subscriptionColNames = subscriptionCols.map((c) => c.name).filter(Boolean) as string[]
-  applySubscriptionsMigrations((sql) => sqlite.exec(sql), subscriptionColNames)
-  const db = drizzle(sqlite)
+  const { db } = getDatabaseConnection()
 
   const store = createSqliteSubscriptionsStore({ db })
   const metaStore = createSqliteMetaStore({ db })
@@ -85,6 +51,9 @@ export const getApiSubscriptions = (): SubscriptionsApi => {
     store,
     metaStore,
     fetcher: new RssParserFeedFetcher(),
+    // `get` is this process's startup snapshot. A task Desktop wrote to the
+    // shared database after that is still a real download.
+    taskExists: (taskId) => taskQueue.hasTask(taskId),
     enqueueItem: async ({ subscription, item }) => {
       const tags = Array.from(new Set([subscription.platform, ...subscription.tags]))
       const settings = toWebDownloadRuntimeSettings(await webSettingsStore.get())
@@ -136,7 +105,11 @@ export const startApiSubscriptions = async (): Promise<void> => {
   if (started) {
     return
   }
-  await getApiSubscriptions().start()
+  const subscriptions = getApiSubscriptions()
+  await subscriptions.start()
+  removeTaskListener = taskQueue.on('task-removed', (event) => {
+    subscriptions.noteTaskRemoved(event.taskId)
+  })
   started = true
 }
 
@@ -144,6 +117,8 @@ export const stopApiSubscriptions = async (): Promise<void> => {
   if (!started) {
     return
   }
+  removeTaskListener?.()
+  removeTaskListener = null
   await api?.stop()
   started = false
 }

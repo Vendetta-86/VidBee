@@ -1,6 +1,8 @@
 import type { PlaylistInfo } from "@vidbee/downloader-core";
+import type { OneClickQualityPreset } from "@vidbee/downloader-core/format-preferences";
 import { Button } from "@vidbee/ui/components/ui/button";
 import { Checkbox } from "@vidbee/ui/components/ui/checkbox";
+import { DownloadQualitySelect } from "@vidbee/ui/components/ui/download-quality-select";
 import { Input } from "@vidbee/ui/components/ui/input";
 import { Label } from "@vidbee/ui/components/ui/label";
 import { ScrollArea } from "@vidbee/ui/components/ui/scroll-area";
@@ -19,6 +21,8 @@ interface PlaylistDownloadProps {
 	selectedEntryIds: Set<string>;
 	downloadType: "video" | "audio";
 	downloadTypeId: string;
+	quality: OneClickQualityPreset;
+	setQuality: (value: OneClickQualityPreset) => void;
 	containerSelect: ReactNode;
 	startIndex: string;
 	endIndex: string;
@@ -53,6 +57,8 @@ export function PlaylistDownload({
 	selectedEntryIds,
 	downloadType,
 	downloadTypeId,
+	quality,
+	setQuality,
 	containerSelect,
 	startIndex,
 	endIndex,
@@ -190,7 +196,21 @@ export function PlaylistDownload({
 							)}
 						>
 							<div className="min-h-0 overflow-hidden">
-								<div className="mt-3 grid grid-cols-2 gap-2 rounded-md bg-muted/40 p-3">
+								<div className="mt-3 grid grid-cols-3 gap-2 rounded-md bg-muted/40 p-3">
+									<div className="min-w-0 space-y-1">
+										<Label
+											className="font-medium text-muted-foreground text-xs"
+											htmlFor={`${downloadTypeId}-quality`}
+										>
+											{t("settings.oneClickQuality")}
+										</Label>
+										<DownloadQualitySelect
+											id={`${downloadTypeId}-quality`}
+											disabled={playlistBusy}
+											value={quality}
+											onValueChange={setQuality}
+										/>
+									</div>
 									<div className="min-w-0 space-y-1">
 										<Label
 											className="font-medium text-muted-foreground text-xs"

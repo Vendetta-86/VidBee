@@ -1,41 +1,11 @@
 import { type IpcContext, IpcMethod, IpcService } from 'electron-ipc-decorator'
 import { autoUpdater } from 'electron-updater'
 import type { AppSettings } from '../../../shared/types'
-import {
-  applyBatchSettingSideEffects,
-  applySingleSettingSideEffects
-} from '../../lib/settings-effects'
+import { updateDesktopSettings } from '../../lib/settings-host'
 import { applyDesktopQueueConcurrency } from '../../lib/task-queue-host'
-import { applyUpdateChannel, refreshUpdateChannel } from '../../lib/update-channel'
 import { settingsManager } from '../../settings'
-import { updateTrayMenu } from '../../tray'
 import { applyAutoLaunchSetting } from '../../utils/auto-launch'
 import { applyDockVisibility } from '../../utils/dock'
-
-const settingSideEffectHandlers = {
-  onLanguage: () => {
-    updateTrayMenu()
-  },
-  onHideDockIcon: (value: boolean) => {
-    applyDockVisibility(value)
-  },
-  onLaunchAtLogin: (value: boolean) => {
-    applyAutoLaunchSetting(value)
-  },
-  onMaxConcurrentDownloads: () => {
-    applyDesktopQueueConcurrency()
-  },
-  onMaxConcurrentTranscriptions: () => {
-    applyDesktopQueueConcurrency()
-  },
-  onBetaProgram: (value: boolean) => {
-    refreshUpdateChannel(value)
-  },
-  onAutoUpdate: (value: boolean) => {
-    autoUpdater.autoDownload = value
-    autoUpdater.autoInstallOnAppQuit = value
-  }
-}
 
 class SettingsService extends IpcService {
   static readonly groupName = 'settings'
@@ -47,8 +17,7 @@ class SettingsService extends IpcService {
 
   @IpcMethod()
   set<K extends keyof AppSettings>(_context: IpcContext, key: K, value: AppSettings[K]): void {
-    settingsManager.set(key, value)
-    applySingleSettingSideEffects(key, value, settingSideEffectHandlers)
+    updateDesktopSettings({ [key]: value })
   }
 
   @IpcMethod()
@@ -58,8 +27,7 @@ class SettingsService extends IpcService {
 
   @IpcMethod()
   setAll(_context: IpcContext, settings: Partial<AppSettings>): void {
-    settingsManager.setAll(settings)
-    applyBatchSettingSideEffects(settings, settingSideEffectHandlers)
+    updateDesktopSettings(settings)
   }
 
   @IpcMethod()
@@ -68,7 +36,6 @@ class SettingsService extends IpcService {
     applyDockVisibility(settingsManager.get('hideDockIcon'))
     applyAutoLaunchSetting(settingsManager.get('launchAtLogin'))
     applyDesktopQueueConcurrency()
-    applyUpdateChannel(settingsManager.get('betaProgram'))
     const autoUpdateEnabled = settingsManager.get('autoUpdate')
     autoUpdater.autoDownload = autoUpdateEnabled
     autoUpdater.autoInstallOnAppQuit = autoUpdateEnabled

@@ -95,6 +95,7 @@ export const DownloadTaskSchema = z.object({
 })
 
 export const DownloadRuntimeSettingsSchema = z.object({
+  skipCookieAuth: z.boolean().optional(),
   downloadPath: z.string().optional(),
   browserForCookies: z.string().optional(),
   cookiesPath: z.string().optional(),
@@ -110,7 +111,9 @@ export const DownloadRuntimeSettingsSchema = z.object({
   embedChapters: z.boolean().optional(),
   filenameStyle: z.enum(['classic', 'basic', 'pretty', 'nerdy']).optional(),
   filenameViaVidBee: z.boolean().optional(),
-  shareWatermark: z.boolean().optional()
+  shareWatermark: z.boolean().optional(),
+  downloadWithoutChannelSubfolders: z.boolean().optional(),
+  downloadMirror: z.enum(['auto', 'cn', 'global']).optional()
 })
 
 export const OneClickQualityPresetSchema = z.enum(['best', 'good', 'normal', 'bad', 'worst'])
@@ -126,7 +129,6 @@ export const WebAppSettingsSchema = z.object({
   cookiesPath: z.string(),
   proxy: z.string(),
   configPath: z.string(),
-  betaProgram: z.boolean(),
   language: z.string(),
   theme: ThemeValueSchema,
   oneClickDownload: z.boolean(),
@@ -153,8 +155,13 @@ export const WebAppSettingsSchema = z.object({
   embedMetadata: z.boolean(),
   embedChapters: z.boolean(),
   filenameStyle: z.enum(['classic', 'basic', 'pretty', 'nerdy']).default('pretty'),
-  filenameViaVidBee: z.boolean().default(true),
+  filenameViaVidBee: z.boolean().default(false),
   shareWatermark: z.boolean(),
+  downloadWithoutChannelSubfolders: z.boolean().default(false),
+  downloadMirror: z.enum(['auto', 'cn', 'global']).default('auto'),
+  enableDownloadNotifications: z.boolean().default(true),
+  rememberLastAudioLanguage: z.boolean().default(true),
+  preferredAudioLanguage: z.string().default(''),
   autoTranscribeAfterDownload: z.boolean().default(true),
   maxConcurrentTranscriptions: z.number().int().min(1).max(4).default(1),
   asrTier: z.preprocess(
@@ -168,9 +175,12 @@ export const WebAppSettingsSchema = z.object({
         'whisper-turbo',
         'sense-voice',
         'sense-voice-2025',
+        'fire-red-asr',
         'parakeet-v2',
         'parakeet-v3',
-        'quality'
+        'orukeet',
+        'quality',
+        'qwen3-1.7b'
       ])
       .default('minimal')
   )
@@ -299,7 +309,20 @@ export const StatusOutputSchema = z.object({
   ok: z.boolean(),
   version: z.string(),
   active: z.number(),
-  pending: z.number()
+  pending: z.number(),
+  downloadDir: z.string().optional(),
+  dataDir: z.string().optional(),
+  dbPath: z.string().optional()
+})
+
+export const EngineStatusSchema = z.object({
+  error: z.string().nullable(),
+  ffmpegVersion: z.string().nullable(),
+  latestYtDlpVersion: z.string().nullable(),
+  nodeVersion: z.string(),
+  state: z.enum(['checking', 'installing', 'up-to-date', 'unavailable', 'update-available']),
+  ytDlpPath: z.string().nullable(),
+  ytDlpVersion: z.string().nullable()
 })
 
 export const CreateDownloadOutputSchema = z.object({

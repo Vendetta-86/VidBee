@@ -102,6 +102,12 @@ export class SqlitePersistAdapter implements PersistAdapter {
     this.applyPragmas()
   }
 
+  async hasTask(taskId: string): Promise<boolean> {
+    this.ensureStmts()
+    const row = this.stmts.hasTask.get(taskId) as { present: number } | undefined
+    return row !== undefined
+  }
+
   async insertTask(task: Task): Promise<void> {
     this.ensureStmts()
     const tx = this.db.transaction((row: Task) => {
@@ -117,6 +123,18 @@ export class SqlitePersistAdapter implements PersistAdapter {
       this.stmts.upsertProgress.run(JSON.stringify(progress), task.id)
     })
     tx.immediate(input.task, input.progress)
+  }
+
+  /** Commit all source references together so retries never see a partially moved file. */
+  async upsertTasks(inputs: PersistTransitionInput[]): Promise<void> {
+    this.ensureStmts()
+    const tx = this.db.transaction(() => {
+      for (const { task, progress } of inputs) {
+        this.stmts.upsertTask.run(...this.bindTask(task))
+        this.stmts.upsertProgress.run(JSON.stringify(progress), task.id)
+      }
+    })
+    tx.immediate()
   }
 
   async upsertProgress(taskId: string, progress: TaskProgress): Promise<void> {
@@ -215,7 +233,9 @@ export class SqlitePersistAdapter implements PersistAdapter {
   async loadLatestAttempt(taskId: string): Promise<AttemptRow | null> {
     this.ensureStmts()
     const row = this.stmts.loadLatestAttempt.get(taskId) as AttemptDbRow | undefined
-    if (!row) return null
+    if (!row) {
+      return null
+    }
     return {
       id: row.id,
       taskId: row.task_id,
@@ -263,7 +283,9 @@ export class SqlitePersistAdapter implements PersistAdapter {
   }
 
   private ensureStmts(): void {
-    if (this.stmts) return
+    if (this.stmts) {
+      return
+    }
     this.stmts = {
       insertTask: this.db.prepare(SQL_INSERT_TASK),
       upsertTask: this.db.prepare(SQL_UPSERT_TASK),
@@ -275,6 +297,7 @@ export class SqlitePersistAdapter implements PersistAdapter {
       closeAttempt: this.db.prepare(SQL_CLOSE_ATTEMPT),
       appendJournal: this.db.prepare(SQL_APPEND_JOURNAL),
       findOpenSpawns: this.db.prepare(SQL_FIND_OPEN_SPAWNS),
+      hasTask: this.db.prepare(SQL_HAS_TASK),
       loadAllTasks: this.db.prepare(SQL_LOAD_ALL_TASKS),
       loadLatestAttempt: this.db.prepare(SQL_LOAD_LATEST_ATTEMPT),
       ageJournal: this.db.prepare(SQL_AGE_JOURNAL),
@@ -321,6 +344,7 @@ interface Stmts {
   closeAttempt: SqliteLikeStatement
   appendJournal: SqliteLikeStatement
   findOpenSpawns: SqliteLikeStatement
+  hasTask: SqliteLikeStatement
   loadAllTasks: SqliteLikeStatement
   loadLatestAttempt: SqliteLikeStatement
   ageJournal: SqliteLikeStatement
@@ -345,6 +369,7 @@ interface TaskDbRow {
   created_at: number
   updated_at: number
   input_json: string
+  first_started_at: number | null
   progress_json: string | null
   output_json: string | null
   last_error_json: string | null
@@ -363,12 +388,17 @@ interface AttemptDbRow {
   raw_args_hash: string
 }
 
+/** Restore lifecycle timestamps from recorded attempts for older task rows. */
 function rowToTask(r: TaskDbRow): Task {
+  const input = JSON.parse(r.input_json) as Task['input']
+  if (input.options?.startedAt == null && r.first_started_at != null) {
+    input.options = { ...input.options, startedAt: r.first_started_at }
+  }
   return {
     id: r.id,
     kind: r.kind as Task['kind'],
     parentId: r.parent_id,
-    input: JSON.parse(r.input_json),
+    input,
     priority: r.priority as Task['priority'],
     groupKey: r.group_key,
     status: r.status,
@@ -473,7 +503,15 @@ WHERE s.op = 'spawn'
 ORDER BY s.seq ASC
 `
 
-const SQL_LOAD_ALL_TASKS = `SELECT * FROM tasks`
+const SQL_HAS_TASK = `
+SELECT 1 AS present FROM tasks WHERE id = ?
+`
+
+const SQL_LOAD_ALL_TASKS = `
+SELECT tasks.*, (
+  SELECT MIN(started_at) FROM attempts WHERE attempts.task_id = tasks.id
+) AS first_started_at
+FROM tasks`
 
 const SQL_LOAD_LATEST_ATTEMPT = `
 SELECT * FROM attempts

@@ -2,16 +2,10 @@ import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from '@renderer/components/ui/select'
 import { TabItem, Tabs, TabsList } from '@renderer/components/ui/tabs'
 import { cn } from '@renderer/lib/utils'
 import type { OneClickQualityPreset, PlaylistInfo } from '@shared/types'
+import { DownloadQualitySelect } from '@vidbee/ui/components/ui/download-quality-select'
 import { Loader2, Settings2 } from 'lucide-react'
 import type { Dispatch, ReactNode, SetStateAction } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -173,32 +167,12 @@ export function PlaylistDownload({
                 <Label className="font-medium text-muted-foreground text-xs" htmlFor={qualityId}>
                   {t('settings.oneClickQuality')}
                 </Label>
-                <Select
+                <DownloadQualitySelect
                   disabled={playlistBusy}
-                  onValueChange={(value) => setQuality(value as OneClickQualityPreset)}
+                  id={qualityId}
+                  onValueChange={setQuality}
                   value={quality}
-                >
-                  <SelectTrigger className="h-7 text-xs" id={qualityId}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem className="text-xs" value="best">
-                      {t('settings.oneClickQualityOptions.best')}
-                    </SelectItem>
-                    <SelectItem className="text-xs" value="good">
-                      {t('settings.oneClickQualityOptions.good')}
-                    </SelectItem>
-                    <SelectItem className="text-xs" value="normal">
-                      {t('settings.oneClickQualityOptions.normal')}
-                    </SelectItem>
-                    <SelectItem className="text-xs" value="bad">
-                      {t('settings.oneClickQualityOptions.bad')}
-                    </SelectItem>
-                    <SelectItem className="text-xs" value="worst">
-                      {t('settings.oneClickQualityOptions.worst')}
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
+                />
               </div>
               <div className="min-w-0 space-y-1">
                 <Label

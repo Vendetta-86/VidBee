@@ -57,9 +57,13 @@ export interface SubscriptionFeedItem {
   title: string
   publishedAt: number
   thumbnail?: string
-  /** True once the item is in the task queue or already downloaded. */
+  /**
+   * True while this item is linked to a task that still exists.
+   * The row itself is the already-seen history: clearing this flag allows a
+   * manual re-add and does not make the next feed check download it again.
+   */
   addedToQueue: boolean
-  /** Task id in the shared task-queue once the item is queued. */
+  /** Task id while the item is queued. Cleared when that task is removed. */
   taskId?: string
 }
 
@@ -163,6 +167,7 @@ export const DEFAULT_LEADER_LOCK_TTL_MS = 90_000
 export const DEFAULT_FEED_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1_000 // 3h
 export const DEFAULT_REFRESH_DEDUPE_WINDOW_MS = 30_000
 export const DEFAULT_SUBSCRIPTION_FILENAME_TEMPLATE = '%(uploader)s/%(title)s.%(ext)s'
+export const SUBSCRIPTION_DUPLICATE_FEED_ERROR = 'SUBSCRIPTION_DUPLICATE_FEED_URL'
 
 /**
  * Decision returned by the auto-download policy. Hosts feed each item to the

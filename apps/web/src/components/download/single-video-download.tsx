@@ -1,4 +1,9 @@
 import type { VideoFormat, VideoInfo } from "@vidbee/downloader-core";
+import { pickPreferredAudioFormatId } from "@vidbee/downloader-core/audio-format-preferences";
+import {
+	filterFormatsByType,
+	getDisplayFormats,
+} from "@vidbee/downloader-core/format-presentation";
 import { Button } from "@vidbee/ui/components/ui/button";
 import {
 	DOWNLOAD_FEEDBACK_ISSUE_TITLE,
@@ -25,7 +30,6 @@ import { AlertCircle, ExternalLink, Loader2, Settings2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { OneClickQualityPreset } from "../../lib/download-format-preferences";
-import { resolveImageProxyUrl } from "../../lib/remote-image-proxy";
 
 export interface SingleVideoState {
 	title: string;
@@ -45,6 +49,7 @@ interface SingleVideoDownloadProps {
 	videoInfo: VideoInfo | null;
 	state: SingleVideoState;
 	oneClickQuality: OneClickQualityPreset;
+	preferredAudioLanguage?: string;
 	feedbackSourceUrl?: string | null;
 	onStateChange: (state: Partial<SingleVideoState>) => void;
 }
@@ -80,36 +85,6 @@ const getCodecShortName = (codec?: string): string => {
 	return codec.split(".")[0].toUpperCase();
 };
 
-const isHlsFormat = (format: VideoFormat): boolean =>
-	format.protocol === "m3u8" || format.protocol === "m3u8_native";
-
-const isHttpProtocol = (format: VideoFormat): boolean =>
-	Boolean(format.protocol?.startsWith("http"));
-
-const filterFormatsByType = (
-	formats: VideoInfo["formats"],
-	activeTab: "video" | "audio",
-): VideoInfo["formats"] => {
-	if (!formats) {
-		return [];
-	}
-
-	return formats.filter((format) => {
-		if (activeTab === "video") {
-			return format.vcodec && format.vcodec !== "none";
-		}
-
-		return (
-			format.acodec &&
-			format.acodec !== "none" &&
-			(format.videoExt === "none" ||
-				!format.videoExt ||
-				!format.vcodec ||
-				format.vcodec === "none")
-		);
-	});
-};
-
 interface FormatListProps {
 	formats: VideoFormat[];
 	type: "video" | "audio";
@@ -117,6 +92,7 @@ interface FormatListProps {
 	selectedFormat: string;
 	onFormatChange: (formatId: string) => void;
 	oneClickQuality: OneClickQualityPreset;
+	preferredAudioLanguage?: string;
 }
 
 const FormatList = ({
@@ -126,6 +102,7 @@ const FormatList = ({
 	selectedFormat,
 	onFormatChange,
 	oneClickQuality,
+	preferredAudioLanguage,
 }: FormatListProps) => {
 	const { t } = useTranslation();
 	const [videoFormats, setVideoFormats] = useState<VideoFormat[]>([]);
@@ -146,23 +123,6 @@ const FormatList = ({
 			const bFps = b.fps ?? 0;
 			if (aFps !== bFps) {
 				return bFps - aFps;
-			}
-			const aHasSize = !!(a.filesize || a.filesizeApprox);
-			const bHasSize = !!(b.filesize || b.filesizeApprox);
-			if (aHasSize !== bHasSize) {
-				return bHasSize ? 1 : -1;
-			}
-			return getFileSize(b) - getFileSize(a);
-		},
-		[getFileSize],
-	);
-
-	const sortAudioFormatsByQuality = useCallback(
-		(a: VideoFormat, b: VideoFormat) => {
-			const aQuality = a.tbr ?? a.quality ?? 0;
-			const bQuality = b.tbr ?? b.quality ?? 0;
-			if (aQuality !== bQuality) {
-				return bQuality - aQuality;
 			}
 			const aHasSize = !!(a.filesize || a.filesizeApprox);
 			const bHasSize = !!(b.filesize || b.filesizeApprox);
@@ -207,53 +167,12 @@ const FormatList = ({
 	);
 
 	useEffect(() => {
-		const isVideoFormat = (format: VideoFormat) =>
-			format.videoExt !== "none" && format.vcodec && format.vcodec !== "none";
-		const isAudioFormat = (format: VideoFormat) =>
-			format.acodec &&
-			format.acodec !== "none" &&
-			(format.videoExt === "none" ||
-				!format.videoExt ||
-				!format.vcodec ||
-				format.vcodec === "none");
-
-		const videos = formats.filter(isVideoFormat);
-		const audios = formats.filter(isAudioFormat);
-
-		const groupedByHeight = new Map<number, VideoFormat[]>();
-		videos.forEach((format) => {
-			const height = format.height ?? 0;
-			const existing = groupedByHeight.get(height) || [];
-			existing.push(format);
-			groupedByHeight.set(height, existing);
-		});
-
-		const finalVideos = Array.from(groupedByHeight.values()).map((group) => {
-			return group.sort((a, b) => getFileSize(b) - getFileSize(a))[0];
-		});
-
-		let finalAudios = audios;
-
-		if (codec === "auto" && type === "audio") {
-			const groupedByQuality = new Map<string, VideoFormat[]>();
-			audios.forEach((format) => {
-				const qualityKey = format.tbr
-					? `tbr_${format.tbr}`
-					: format.quality
-						? `quality_${format.quality}`
-						: "unknown";
-				const existing = groupedByQuality.get(qualityKey) || [];
-				existing.push(format);
-				groupedByQuality.set(qualityKey, existing);
+		const { videoFormats: finalVideos, audioFormats: finalAudios } =
+			getDisplayFormats({
+				formats,
+				type,
+				codec,
 			});
-
-			finalAudios = Array.from(groupedByQuality.values()).map((group) => {
-				return group.sort((a, b) => getFileSize(b) - getFileSize(a))[0];
-			});
-		}
-
-		finalVideos.sort(sortVideoFormatsByQuality);
-		finalAudios.sort(sortAudioFormatsByQuality);
 
 		setVideoFormats(finalVideos);
 		setAudioFormats(finalAudios);
@@ -283,8 +202,13 @@ const FormatList = ({
 				(format) => format.formatId === selectedFormat,
 			);
 			if (finalAudios.length > 0 && !(selectedFormat && hasSelectedAudio)) {
-				const best = finalAudios[0];
-				onFormatChange(best.formatId);
+				const preferredFormatId = pickPreferredAudioFormatId(
+					finalAudios,
+					preferredAudioLanguage,
+				);
+				if (preferredFormatId) {
+					onFormatChange(preferredFormatId);
+				}
 			}
 		}
 	}, [
@@ -295,9 +219,7 @@ const FormatList = ({
 		onFormatChange,
 		pickVideoFormatForPreset,
 		codec,
-		getFileSize,
-		sortVideoFormatsByQuality,
-		sortAudioFormatsByQuality,
+		preferredAudioLanguage,
 	]);
 
 	const formatSize = (bytes?: number) => {
@@ -441,6 +363,7 @@ export function SingleVideoDownload({
 	videoInfo,
 	state,
 	oneClickQuality,
+	preferredAudioLanguage,
 	feedbackSourceUrl,
 	onStateChange,
 }: SingleVideoDownloadProps) {
@@ -463,18 +386,7 @@ export function SingleVideoDownload({
 		if (!videoInfo?.formats) {
 			return [];
 		}
-		const baseFormats = filterFormatsByType(videoInfo.formats, activeTab);
-		if (baseFormats.length === 0) {
-			return [];
-		}
-
-		const hasHttpFormats = baseFormats.some(isHttpProtocol);
-		if (!hasHttpFormats) {
-			return baseFormats;
-		}
-
-		const nonHlsFormats = baseFormats.filter((format) => !isHlsFormat(format));
-		return nonHlsFormats.length > 0 ? nonHlsFormats : baseFormats;
+		return filterFormatsByType(videoInfo.formats, activeTab);
 	}, [videoInfo?.formats, activeTab]);
 
 	const containers = useMemo(() => {
@@ -681,7 +593,6 @@ export function SingleVideoDownload({
 						<div className="relative aspect-video w-24 shrink-0 overflow-hidden rounded-md bg-muted">
 							<RemoteImage
 								alt={displayTitle}
-								cacheResolver={resolveImageProxyUrl}
 								className="aspect-video h-full w-full object-cover"
 								src={videoInfo.thumbnail}
 							/>
@@ -898,6 +809,7 @@ export function SingleVideoDownload({
 									)
 								}
 								oneClickQuality={oneClickQuality}
+								preferredAudioLanguage={preferredAudioLanguage}
 								selectedFormat={
 									activeTab === "video"
 										? state.selectedVideoFormat

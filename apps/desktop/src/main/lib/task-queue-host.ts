@@ -15,7 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { TASK_QUEUE_DDL_V1 } from '@vidbee/db/task-queue'
 import { TRANSCRIPT_DDL_V1 } from '@vidbee/db/transcripts'
-import { YtDlpExecutor } from '@vidbee/downloader-core'
+import { YtDlpExecutor, type YtDlpTaskOptions } from '@vidbee/downloader-core'
 import {
   ExecutorRouter,
   MemoryPersistAdapter,
@@ -32,10 +32,13 @@ import {
 import { app, powerSaveBlocker } from 'electron'
 import { settingsManager } from '../settings'
 import { scopedLoggers } from '../utils/logger'
+import { AsrModelExecutor } from './asr-model-executor'
 import { resolveBundledResourcesPath } from './bundled-resources-path'
 import { getDatabaseConnection } from './database'
 import { startDownloadPowerSaveGuard } from './download-power-save'
+import { applyExtensionCookieSettings } from './extension-cookies'
 import { ffmpegManager } from './ffmpeg-manager'
+import { MediaTransformExecutor } from './media-transform-executor'
 import { setDesktopTaskQueueRef } from './queue-ref'
 import {
   broadcastTranscript,
@@ -44,6 +47,7 @@ import {
   getTranscriptSnapshot,
   getTranscriptStore,
   resolveTranscriptionBackend,
+  resolveTranscriptionGpuKinds,
   resolveTranscriptionWorkerScript,
   stopAutoTranscription
 } from './transcript-host'
@@ -89,7 +93,12 @@ const buildExecutor = (): YtDlpExecutor =>
     resolveYtDlpPath,
     resolveFfmpegLocation,
     defaultDownloadDir: resolveDownloadDir(),
-    extraArgs: () => ytdlpManager.getJsRuntimeArgs?.() ?? []
+    extraArgs: () => ytdlpManager.getJsRuntimeArgs?.() ?? [],
+    prepareSettings: (input) =>
+      applyExtensionCookieSettings(
+        input.url,
+        (input.options as YtDlpTaskOptions | undefined)?.settings
+      )
   })
 
 const buildPersistAdapter = (
@@ -146,6 +155,7 @@ const buildTranscriptionExecutor = (): TranscriptionExecutor => {
     execPath: process.execPath,
     bundledNodePath: resolveBundledNodePath([resourcesDir]),
     workDir: path.join(app.getPath('userData'), 'transcript-work'),
+    resolveGpuKinds: resolveTranscriptionGpuKinds,
     onPartial: ({ downloadTaskId, segments }) => {
       broadcastTranscriptPartials(downloadTaskId, segments)
     },
@@ -164,7 +174,11 @@ export const getDesktopTaskQueue = (): TaskQueueAPI => {
   persistent = isPersistent
   const executor = new ExecutorRouter({
     defaultExecutor: buildExecutor(),
-    byKind: { transcription: buildTranscriptionExecutor() }
+    byKind: {
+      transcription: buildTranscriptionExecutor(),
+      conversion: new MediaTransformExecutor(),
+      'model-download': new AsrModelExecutor()
+    }
   })
   const maxConcurrent = settingsManager.get('maxConcurrentDownloads')
   taskQueueInstance = new TaskQueueAPI({
@@ -181,6 +195,8 @@ export const getDesktopTaskQueue = (): TaskQueueAPI => {
  * Push the current download and transcription concurrency settings into the scheduler.
  */
 export const applyDesktopQueueConcurrency = (): void => {
+  void getDesktopTaskQueue().setMaxPerGroup('conversion', 1)
+  void getDesktopTaskQueue().setMaxPerGroup('model-download', 1)
   applyTranscriptionConcurrency({
     queue: getDesktopTaskQueue(),
     maxConcurrentDownloads: settingsManager.get('maxConcurrentDownloads'),

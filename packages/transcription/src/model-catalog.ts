@@ -1,9 +1,13 @@
 import {
   type AsrTierId,
+  FIRE_RED_ASR_ARCHIVE,
+  FIRE_RED_ASR_DIR,
+  ORUKEET_DIR,
   PARAKEET_V2_ARCHIVE,
   PARAKEET_V2_DIR,
   PARAKEET_V3_ARCHIVE,
   PARAKEET_V3_DIR,
+  QWEN3_ASR_1_7B_DIR,
   QWEN3_ASR_ARCHIVE,
   QWEN3_ASR_DIR,
   SENSE_VOICE_2025_ARCHIVE,
@@ -21,6 +25,7 @@ import {
   WHISPER_TURBO_ARCHIVE,
   WHISPER_TURBO_DIR
 } from './asr-tiers'
+import { QWEN3_ASR_TOKENIZER_FILES } from './qwen3-tokenizer'
 import {
   CAMPPLUS_FILE,
   CAMPPLUS_URL,
@@ -40,9 +45,15 @@ const PYANNOTE_DIR = 'sherpa-onnx-pyannote-segmentation-3-0'
 const PUNCT_CT_ARCHIVE =
   'https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2'
 const PUNCT_CT_DIR = 'sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8'
+const ORUKEET_BASE_URL =
+  'https://huggingface.co/oruk/orukeet/resolve/debfb0d5423d4b0446361e0ea024e6891e23a249/onnx/sherpa-v0.1.0-int8'
+const ORUKEET_MANIFEST = `${ORUKEET_DIR}/manifest.json`
+/** Pinned 1.7B export linked by the official sherpa-onnx Qwen3-ASR documentation. */
+const QWEN3_ASR_1_7B_BASE_URL =
+  'https://modelscope.cn/models/zengshuishui/Qwen3-ASR-onnx/resolve/cb045ad80b8970c9d411d463e5b78991a566596c'
 
 /**
- * Official k2-fsa/sherpa-onnx release assets. Whisper packages use int8
+ * Publisher-provided sherpa-onnx assets. Whisper packages use int8
  * encoder/decoder files; SenseVoice uses a single int8 model.
  * Qwen3 stays at its existing directory so already-downloaded files are reused.
  */
@@ -259,6 +270,33 @@ export const MODEL_CATALOG: readonly ModelFileSpec[] = [
     required: true
   },
   {
+    id: 'fire-red-asr-encoder',
+    role: 'asr-encoder',
+    group: 'asr',
+    tier: 'fire-red-asr',
+    fileName: `${FIRE_RED_ASR_DIR}/encoder.int8.onnx`,
+    url: FIRE_RED_ASR_ARCHIVE,
+    required: true
+  },
+  {
+    id: 'fire-red-asr-decoder',
+    role: 'asr-decoder',
+    group: 'asr',
+    tier: 'fire-red-asr',
+    fileName: `${FIRE_RED_ASR_DIR}/decoder.int8.onnx`,
+    url: FIRE_RED_ASR_ARCHIVE,
+    required: true
+  },
+  {
+    id: 'fire-red-asr-tokens',
+    role: 'asr-tokens',
+    group: 'asr',
+    tier: 'fire-red-asr',
+    fileName: `${FIRE_RED_ASR_DIR}/tokens.txt`,
+    url: FIRE_RED_ASR_ARCHIVE,
+    required: true
+  },
+  {
     id: 'parakeet-v2-encoder',
     role: 'asr-encoder',
     group: 'asr',
@@ -331,6 +369,76 @@ export const MODEL_CATALOG: readonly ModelFileSpec[] = [
     required: true
   },
   {
+    id: 'orukeet-manifest',
+    role: 'asr-extra',
+    group: 'asr',
+    tier: 'orukeet',
+    fileName: ORUKEET_MANIFEST,
+    url: `${ORUKEET_BASE_URL}/manifest.json`,
+    sha256: '7e80f93f0e9b923c392424b0f85d28a717feee0a4d2a6aa9bfa723693868e727',
+    required: true
+  },
+  {
+    id: 'orukeet-encoder',
+    role: 'asr-encoder',
+    group: 'asr',
+    tier: 'orukeet',
+    fileName: `${ORUKEET_DIR}/encoder.int8.onnx`,
+    url: `${ORUKEET_BASE_URL}/encoder.int8.onnx`,
+    checksumManifest: ORUKEET_MANIFEST,
+    required: true
+  },
+  {
+    id: 'orukeet-decoder',
+    role: 'asr-decoder',
+    group: 'asr',
+    tier: 'orukeet',
+    fileName: `${ORUKEET_DIR}/decoder.int8.onnx`,
+    url: `${ORUKEET_BASE_URL}/decoder.int8.onnx`,
+    checksumManifest: ORUKEET_MANIFEST,
+    required: true
+  },
+  {
+    id: 'orukeet-joiner',
+    role: 'asr-joiner',
+    group: 'asr',
+    tier: 'orukeet',
+    fileName: `${ORUKEET_DIR}/joiner.int8.onnx`,
+    url: `${ORUKEET_BASE_URL}/joiner.int8.onnx`,
+    checksumManifest: ORUKEET_MANIFEST,
+    required: true
+  },
+  {
+    id: 'orukeet-tokens',
+    role: 'asr-tokens',
+    group: 'asr',
+    tier: 'orukeet',
+    fileName: `${ORUKEET_DIR}/tokens.txt`,
+    url: `${ORUKEET_BASE_URL}/tokens.txt`,
+    checksumManifest: ORUKEET_MANIFEST,
+    required: true
+  },
+  {
+    id: 'orukeet-license',
+    role: 'asr-extra',
+    group: 'asr',
+    tier: 'orukeet',
+    fileName: `${ORUKEET_DIR}/LICENSE-WEIGHTS`,
+    url: `${ORUKEET_BASE_URL}/LICENSE-WEIGHTS`,
+    checksumManifest: ORUKEET_MANIFEST,
+    required: true
+  },
+  {
+    id: 'orukeet-notice',
+    role: 'asr-extra',
+    group: 'asr',
+    tier: 'orukeet',
+    fileName: `${ORUKEET_DIR}/NOTICE.md`,
+    url: `${ORUKEET_BASE_URL}/NOTICE.md`,
+    checksumManifest: ORUKEET_MANIFEST,
+    required: true
+  },
+  {
     id: 'qwen3-asr-encoder',
     role: 'asr-encoder',
     group: 'asr',
@@ -364,6 +472,47 @@ export const MODEL_CATALOG: readonly ModelFileSpec[] = [
     tier: 'quality',
     fileName: `${QWEN3_ASR_DIR}/tokenizer`,
     url: QWEN3_ASR_ARCHIVE,
+    directoryMembers: QWEN3_ASR_TOKENIZER_FILES,
+    required: true
+  },
+  {
+    id: 'qwen3-asr-1.7b-encoder',
+    role: 'asr-encoder',
+    group: 'asr',
+    tier: 'qwen3-1.7b',
+    fileName: `${QWEN3_ASR_1_7B_DIR}/encoder.int8.onnx`,
+    url: `${QWEN3_ASR_1_7B_BASE_URL}/model_1.7B/encoder.int8.onnx`,
+    sha256: '436fbd910a0c8914851e5ac1354e807be9f283d08a5da728adaa609731c41469',
+    required: true
+  },
+  {
+    id: 'qwen3-asr-1.7b-decoder',
+    role: 'asr-decoder',
+    group: 'asr',
+    tier: 'qwen3-1.7b',
+    fileName: `${QWEN3_ASR_1_7B_DIR}/decoder.int8.onnx`,
+    url: `${QWEN3_ASR_1_7B_BASE_URL}/model_1.7B/decoder.int8.onnx`,
+    sha256: 'c43c853fa6e97d08365cb8a5502b360b595cd43c00dc60e4d8ca7cc18cad460b',
+    required: true
+  },
+  {
+    id: 'qwen3-asr-1.7b-frontend',
+    role: 'asr-frontend',
+    group: 'asr',
+    tier: 'qwen3-1.7b',
+    fileName: `${QWEN3_ASR_1_7B_DIR}/conv_frontend.onnx`,
+    url: `${QWEN3_ASR_1_7B_BASE_URL}/model_1.7B/conv_frontend.onnx`,
+    sha256: 'fa894a4ba53da6a4238f2a6ca0b09362e505d39cecbd646051b033e2e8d7e2fb',
+    required: true
+  },
+  {
+    id: 'qwen3-asr-1.7b-tokenizer',
+    role: 'asr-tokenizer',
+    group: 'asr',
+    tier: 'qwen3-1.7b',
+    fileName: `${QWEN3_ASR_1_7B_DIR}/tokenizer`,
+    url: `${QWEN3_ASR_1_7B_BASE_URL}/tokenizer`,
+    directoryMembers: QWEN3_ASR_TOKENIZER_FILES,
     required: true
   },
   {

@@ -7,10 +7,9 @@ export const DEFAULT_FILENAME_VIA_VIDBEE = false
 
 export const VIA_VIDBEE_LABEL = 'via VidBee'
 export const DEFAULT_FILENAME_TEMPLATE = '%(title)s.%(ext)s'
-export const SHARED_FILENAME_TEMPLATE = `%(title)s ${VIA_VIDBEE_LABEL}.%(ext)s`
+export const SHARED_FILENAME_TEMPLATE = DEFAULT_FILENAME_TEMPLATE
 
-const VIA_VIDBEE_SUFFIX = ` ${VIA_VIDBEE_LABEL}`
-const YTDLP_EXT_TOKEN = '.%(ext)s'
+const LEGACY_BRAND_SUFFIX = /\s+via Vid\s*Bee(?=\.(?:%\(ext\)s|[a-z0-9]+)$|$)/i
 const AUTHOR_FIELD = '%(uploader,creator,channel,uploader_id)s'
 
 const FILENAME_STYLE_TEMPLATES: Record<FilenameStyle, { audio: string; video: string }> = {
@@ -61,41 +60,22 @@ export const isFilenameStyle = (value: unknown): value is FilenameStyle =>
   typeof value === 'string' && (FILENAME_STYLES as readonly string[]).includes(value)
 
 /**
- * Insert `via VidBee` before the file extension when the setting is on.
- *
- * Already branded names are left unchanged so share-watermark templates and
- * repeated calls do not double the suffix.
+ * Keep fork filenames unbranded, including templates saved by older releases.
  *
  * @param value yt-dlp template or preview filename.
- * @param enabled Whether the via VidBee suffix should be applied.
- * @returns The original value, or the same name with `via VidBee` added.
+ * @param _enabled Legacy setting retained for caller compatibility.
+ * @returns The filename without a generated brand suffix.
  */
 export const applyViaVidBeeFilename = (
   value: string,
-  enabled = DEFAULT_FILENAME_VIA_VIDBEE
-): string => {
-  if (!enabled || value.includes(VIA_VIDBEE_LABEL)) {
-    return value
-  }
-
-  if (value.endsWith(YTDLP_EXT_TOKEN)) {
-    return `${value.slice(0, -YTDLP_EXT_TOKEN.length)}${VIA_VIDBEE_SUFFIX}${YTDLP_EXT_TOKEN}`
-  }
-
-  const lastDot = value.lastIndexOf('.')
-  if (lastDot > 0) {
-    return `${value.slice(0, lastDot)}${VIA_VIDBEE_SUFFIX}${value.slice(lastDot)}`
-  }
-
-  return `${value}${VIA_VIDBEE_SUFFIX}`
-}
+  _enabled = DEFAULT_FILENAME_VIA_VIDBEE
+): string => value.replace(LEGACY_BRAND_SUFFIX, '')
 
 /**
  * Resolve the yt-dlp output template for a filename style and download type.
  *
- * Custom caller templates still win. Share-watermark mode always uses the
- * branded title template. An unset style uses pretty. An unset via VidBee
- * flag defaults to off.
+ * Share-watermark and legacy filename flags never add branding in this fork.
+ * An unset style uses the title-only pretty template.
  *
  * @param style Saved filename style, or undefined for the pretty default.
  * @param type Video or audio download.

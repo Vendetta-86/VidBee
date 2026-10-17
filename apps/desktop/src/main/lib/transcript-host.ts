@@ -1,6 +1,6 @@
-import { existsSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { TaskCreationMetadata } from '@vidbee/task-queue'
 import { type Task, TRANSCRIBABLE_TASK_KINDS } from '@vidbee/task-queue'
 import {
   type AsrTierId,
@@ -18,6 +18,7 @@ import {
   findActiveTranscription,
   findSidecarCaptionTracks,
   type GpuKind,
+  gpuKindFromHint,
   type InsertTranscriptSegmentInput,
   importCaptionsForDownload,
   importSidecarCaptionsIfPresent,
@@ -54,12 +55,16 @@ import { settingsManager } from '../settings'
 import { scopedLoggers } from '../utils/logger'
 import { stopPromptRunsForDownload } from './ai-prompt-runner'
 import { deletePersistedPromptRunsForDownload } from './ai-prompt-store'
+import { enqueueAsrModelDownload, listAsrModelTasks, waitForAsrModelTask } from './asr-model-task'
 import { getDatabaseConnection } from './database'
 import { ffmpegManager } from './ffmpeg-manager'
 import { type ImportLocalMediaResult, importLocalMediaFiles } from './import-local-media'
-import { getDesktopTaskQueueRef } from './queue-ref'
+import { readTaskCreation } from './projection'
+import { getDesktopTaskQueueRef, peekDesktopTaskQueueRef } from './queue-ref'
 import { resolveTaskSourceFile } from './source-file'
 import { readElectronLocaleHints } from './system-locale'
+import { transcriptStageHistory } from './transcript-stage-history'
+import { resolveWorkerBundle } from './transcription-worker-path'
 
 const logger = scopedLoggers.engine
 
@@ -74,6 +79,7 @@ export type TranscriptListState =
   | 'retry-scheduled'
 
 export interface TranscriptSnapshot {
+  creation?: TaskCreationMetadata
   downloadTaskId: string
   transcriptionTaskId: string | null
   transcriptId: string | null
@@ -241,13 +247,7 @@ export const getModelManager = (): ModelManager => {
  * Path to the isolated AI worker bundle emitted next to the main process.
  */
 export const resolveTranscriptionWorkerScript = (): string => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const candidates = [
-    join(here, 'transcription-worker.js'),
-    join(here, '../../../../../packages/transcription/src/worker/entry.ts')
-  ]
-  const found = candidates.find((path) => existsSync(path))
-  return found ?? candidates[0] ?? join(here, 'transcription-worker.js')
+  return resolveWorkerBundle(dirname(fileURLToPath(import.meta.url)))
 }
 
 export const resolveTranscriptionBackend = (): 'sherpa' | 'fake' =>
@@ -467,6 +467,8 @@ export const getTranscriptSnapshot = (downloadTaskId: string): TranscriptSnapsho
     })
   }
   const task = active ?? latest
+  const partial = task ? transcriptionPartials.getByTask(task.id) : null
+  const stage = partial?.stage ?? stageFromTask(task)
   const stored = getTranscriptStore().listForDownload(downloadTaskId)
   const sources = buildTranscriptSources({
     asrActive: Boolean(active && !isRediarizeTask(active)),
@@ -476,18 +478,21 @@ export const getTranscriptSnapshot = (downloadTaskId: string): TranscriptSnapsho
     tracks: sourceFilePath ? findSidecarCaptionTracks(sourceFilePath) : []
   })
   const selected = sources.find((item) => item.selected)
-  record = recordForTranscriptSource(selected, stored, record)
+  const latestRecord = record
+  record = recordForTranscriptSource(selected, stored, latestRecord)
+  const listedRecord = record ?? latestRecord
   return {
     downloadTaskId,
-    transcriptionTaskId: task?.id ?? record?.transcriptionTaskId ?? null,
+    transcriptionTaskId: task?.id ?? listedRecord?.transcriptionTaskId ?? null,
+    creation: task ? readTaskCreation(task) : undefined,
     transcriptId: record?.id ?? null,
-    listState: listStateOf(task, record),
-    stage: transcriptionPartials.getByDownload(downloadTaskId)?.stage ?? stageFromTask(task),
-    stageHistory: transcriptionPartials.getByDownload(downloadTaskId)?.stageHistory ?? [],
+    listState: listStateOf(task, listedRecord),
+    stage,
+    stageHistory: transcriptStageHistory(task, stage, partial?.stageHistory),
     error: task?.lastError?.rawMessage ?? null,
     sourceFilePath,
     title: titleFromDownload(download, sourceFilePath),
-    updatedAt: Math.max(task?.updatedAt ?? 0, record?.updatedAt ?? 0),
+    updatedAt: Math.max(task?.updatedAt ?? 0, listedRecord?.updatedAt ?? 0),
     record,
     asrTier: isAsrTierId(record?.asrTier)
       ? record.asrTier
@@ -501,6 +506,7 @@ export const getTranscriptSnapshot = (downloadTaskId: string): TranscriptSnapsho
 
 /**
  * Switch the visible transcript between caption languages and local ASR.
+ * Switching to ASR does not start transcription; the user starts it from the empty pane.
  * Viewing captions does not cancel an in-flight ASR run.
  *
  * @param downloadTaskId Parent download id.
@@ -522,16 +528,10 @@ export const selectTranscriptSource = async (
       .find((row) => row.sourceKind === 'asr' && row.resultKind === 'transcript')
     if (stored) {
       getTranscriptStore().activate(downloadTaskId, stored.id)
-      const next = getTranscriptSnapshot(downloadTaskId)
-      broadcastTranscript(next)
-      return next
     }
-    if (findActiveTranscription(getDesktopTaskQueueRef(), downloadTaskId)) {
-      const next = getTranscriptSnapshot(downloadTaskId)
-      broadcastTranscript(next)
-      return next
-    }
-    return startTranscriptionForDownload(downloadTaskId, true)
+    const next = getTranscriptSnapshot(downloadTaskId)
+    broadcastTranscript(next)
+    return next
   }
   const sourceFilePath = snapshot.sourceFilePath
   if (sourceFilePath) {
@@ -586,7 +586,8 @@ export const importLocalMediaForTranscription = async (
     queue: getDesktopTaskQueueRef(),
     store: getTranscriptStore(),
     paths,
-    language: readUiLanguage()
+    language: readUiLanguage(),
+    asrTier: readActiveAsrTier()
   })
   for (const item of result.imported) {
     broadcastTranscript(getTranscriptSnapshot(item.downloadId))
@@ -602,7 +603,8 @@ export const startTranscriptionForDownload = async (
   downloadTaskId: string,
   force = false,
   asrTier?: AsrTierId,
-  speakerCount?: SpeakerCount
+  speakerCount?: SpeakerCount,
+  creation?: TaskCreationMetadata
 ): Promise<TranscriptSnapshot> => {
   const queue = getDesktopTaskQueueRef()
   const download = queue.get(downloadTaskId)
@@ -623,6 +625,7 @@ export const startTranscriptionForDownload = async (
   }
   await enqueueTranscription({
     queue,
+    creation,
     store: getTranscriptStore(),
     downloadTaskId,
     sourceFilePath: source,
@@ -693,6 +696,9 @@ export const emptyTranscriptSnapshot = (downloadTaskId: string): TranscriptSnaps
  * @param downloadTaskId Parent download id.
  */
 export const deleteTranscriptsForDownload = (downloadTaskId: string): void => {
+  void import('./agent-chat-runner')
+    .then(({ deleteAgentVideo }) => deleteAgentVideo(downloadTaskId))
+    .catch((error) => logger.error('Failed to clean up video agent state', error))
   transcriptionPartials.clearByDownload(downloadTaskId)
   viewingKeys.delete(downloadTaskId)
   getTranscriptStore().deleteByDownload(downloadTaskId)
@@ -701,22 +707,31 @@ export const deleteTranscriptsForDownload = (downloadTaskId: string): void => {
   broadcastTranscript(emptyTranscriptSnapshot(downloadTaskId))
 }
 
-let gpuProbe: Promise<{ gpu: GpuKind; gpuName: string | null }> | null = null
+interface HostGpuProbe {
+  gpu: GpuKind
+  gpuKinds: GpuKind[]
+  gpuName: string | null
+}
+
+let gpuProbe: Promise<HostGpuProbe> | null = null
 
 /**
  * Read Chromium GPU info once and cache the vendor used for recommendations.
  */
-const probeHostGpu = async (): Promise<{ gpu: GpuKind; gpuName: string | null }> => {
+const probeHostGpu = async (): Promise<HostGpuProbe> => {
   if (!gpuProbe) {
     gpuProbe = (async () => {
       try {
         const info = await app.getGPUInfo('complete')
         const devices = collectGpuDevices(info)
         const machine = readMachineProfile({ devices })
-        return { gpu: machine.gpu, gpuName: machine.gpuName }
+        const gpuKinds = [
+          ...new Set(devices.map(gpuKindFromHint).filter((kind) => kind !== 'unknown'))
+        ]
+        return { gpu: machine.gpu, gpuKinds, gpuName: machine.gpuName }
       } catch (error) {
         logger.warn('transcription: gpu probe failed', error)
-        return { gpu: 'unknown', gpuName: null }
+        return { gpu: 'unknown', gpuKinds: [], gpuName: null }
       }
     })()
   }
@@ -731,6 +746,12 @@ export const startHostGpuProbe = (): void => {
 }
 
 /**
+ * Return every detected GPU vendor so provider selection does not ignore inactive adapters.
+ */
+export const resolveTranscriptionGpuKinds = async (): Promise<readonly GpuKind[]> =>
+  (await probeHostGpu()).gpuKinds
+
+/**
  * Return on-disk model status plus a machine/language recommendation.
  */
 export const getTranscriptionModelStatus = async (): Promise<ModelStatus> => {
@@ -740,6 +761,15 @@ export const getTranscriptionModelStatus = async (): Promise<ModelStatus> => {
   const language = readUiLanguage()
   return {
     ...status,
+    pendingTiers: peekDesktopTaskQueueRef()
+      ? listAsrModelTasks().flatMap((task) => {
+          const tier = task.input.options?.asrTier
+          return isAsrTierId(tier) &&
+            ['queued', 'running', 'processing', 'retry-scheduled'].includes(task.status)
+            ? [tier]
+            : []
+        })
+      : [],
     language,
     machine,
     recommended: recommendAsrModels({
@@ -766,27 +796,40 @@ export const readActiveAsrTier = (): AsrTierId => {
  */
 export const readUiLanguage = (): string => String(settingsManager.get('language') ?? 'en')
 
-/**
- * Download one ASR package. A user cancel returns disk status instead of throwing.
- */
-const downloadAsrTier = (tier: AsrTierId): Promise<ModelStatus> =>
-  getModelManager().ensureReadyAllowCancel({ groups: MINIMAL_MODEL_GROUPS, tiers: [tier] })
-
+/** Select a model after its queue-owned package download is ready. */
 export const setActiveAsrTier = async (tier: AsrTierId): Promise<ModelStatus> => {
-  const status = await downloadAsrTier(tier)
+  const status = await ensureAsrTier(tier)
   if (status.tiers.find((item) => item.id === tier)?.ready !== true) {
-    return status
+    throw Object.assign(new Error('ASR model download cancelled or paused'), { name: 'AbortError' })
   }
   settingsManager.set('asrTier', tier)
   return getModelManager().status(undefined, [tier])
 }
 
-export const ensureAsrTier = (tier: AsrTierId): Promise<ModelStatus> => downloadAsrTier(tier)
+/** Await a durable package task, preserving the Settings download API. */
+export const ensureAsrTier = async (tier: AsrTierId): Promise<ModelStatus> => {
+  const ready = getModelManager().status(['asr'], [tier])
+  if (ready.ready) {
+    return ready
+  }
+  const { task } = await enqueueAsrModelDownload(tier)
+  if (task.status === 'paused') {
+    await getDesktopTaskQueueRef().resume(task.id)
+  }
+  await waitForAsrModelTask(task.id)
+  return getModelManager().status(['asr'], [tier])
+}
 
 /**
  * Stop an in-flight ASR model download and drop its partial files.
  */
 export const cancelAsrTier = async (tier: AsrTierId): Promise<ModelStatus> => {
+  const tasks = listAsrModelTasks(tier).filter(
+    (task) => !['completed', 'failed', 'cancelled'].includes(task.status)
+  )
+  for (const task of tasks) {
+    await getDesktopTaskQueueRef().cancel(task.id)
+  }
   getModelManager().cancelDownload(tier)
   return getTranscriptionModelStatus()
 }
@@ -797,6 +840,13 @@ export const cancelAsrTier = async (tier: AsrTierId): Promise<ModelStatus> => {
 export const deleteAsrTier = async (tier: AsrTierId): Promise<ModelStatus> => {
   if (readActiveAsrTier() === tier) {
     throw new Error('cannot delete the active ASR model')
+  }
+  if (
+    listAsrModelTasks(tier).some(
+      (task) => !['completed', 'failed', 'cancelled'].includes(task.status)
+    )
+  ) {
+    throw new Error('Cancel the queued ASR download before deleting its model')
   }
   getModelManager().removeTier(tier)
   return getTranscriptionModelStatus()
