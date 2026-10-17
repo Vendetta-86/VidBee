@@ -211,7 +211,11 @@ export const fetchVideoInfo = async (url: string): Promise<VideoInfo> => {
       throw error
     }
     logger.warn('Retrying video info without cookies after auth/cookie failure:', url)
-    return fetchVideoInfoWithSettings(url, withoutCookieAuth(settings))
+    try {
+      return await fetchVideoInfoWithSettings(url, withoutCookieAuth(settings))
+    } catch {
+      throw error
+    }
   }
 }
 
@@ -248,9 +252,12 @@ export const fetchVideoInfoWithCommand = async (url: string): Promise<VideoInfoC
 
   logger.warn('Retrying video info command without cookies after auth/cookie failure:', url)
   const retry = await fetchVideoInfoWithCommandAndSettings(url, withoutCookieAuth(settings))
+  if (!retry.info) {
+    return result
+  }
   return {
     ...retry,
-    cookiesIgnored: Boolean(retry.info)
+    cookiesIgnored: true
   }
 }
 

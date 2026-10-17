@@ -105,8 +105,8 @@ const SITE_SPECS = [
   {
     id: 'youtube',
     label: 'YouTube',
-    domainIncludes: ['youtube.com', 'google.com'],
-    cookieNames: ['SID', 'LOGIN_INFO', 'SAPISID', '__Secure-1PSID', '__Secure-3PSID']
+    domainIncludes: ['youtube.com'],
+    cookieNames: ['LOGIN_INFO', 'SAPISID', '__Secure-1PAPISID', '__Secure-3PAPISID']
   },
   {
     id: 'bilibili',
@@ -333,13 +333,22 @@ export const inspectNetscapeCookies = (text: string, cookiesPath?: string): Cook
   for (const spec of SITE_SPECS) {
     const matches = cookies.filter(
       (cookie) =>
-        spec.domainIncludes.some((fragment) => cookie.domain.includes(fragment)) &&
-        spec.cookieNames.some((name) => name === cookie.name)
+        spec.domainIncludes.some(
+          (domain) => cookie.domain === domain || cookie.domain.endsWith(`.${domain}`)
+        ) && spec.cookieNames.some((name) => name === cookie.name)
     )
     if (matches.length === 0) {
       continue
     }
-    const hasFresh = matches.some((cookie) => cookie.expires === 0 || cookie.expires > nowSeconds)
+    const freshMatches = matches.filter(
+      (cookie) => cookie.expires === 0 || cookie.expires > nowSeconds
+    )
+    // Match yt-dlp's YouTube authentication requirements, not leftover SID cookies.
+    if (spec.id === 'youtube' && !hasYouTubeLoginCookies(matches)) {
+      continue
+    }
+    const hasFresh =
+      spec.id === 'youtube' ? hasYouTubeLoginCookies(freshMatches) : freshMatches.length > 0
     sites.push({ expired: !hasFresh, id: spec.id, label: spec.label })
   }
 
@@ -457,6 +466,12 @@ interface ParsedNetscapeCookie {
   expires: number
 }
 
+const hasYouTubeLoginCookies = (cookies: ParsedNetscapeCookie[]): boolean =>
+  cookies.some((cookie) => cookie.name === 'LOGIN_INFO') &&
+  cookies.some((cookie) =>
+    ['SAPISID', '__Secure-1PAPISID', '__Secure-3PAPISID'].includes(cookie.name)
+  )
+
 /**
  * Parse Netscape cookie rows from a cookies.txt body.
  *
@@ -473,7 +488,7 @@ const parseNetscapeCookieLines = (text: string): ParsedNetscapeCookie[] => {
     const domainField = fields[0]
     const expiresField = fields[4]
     const nameField = fields[5]
-    if (fields.length < 7 || domainField === undefined || nameField === undefined) {
+    if (fields.length < 7 || !domainField || !nameField || !fields[6]) {
       continue
     }
     const domain = domainField.startsWith(HTTPONLY_DOMAIN_PREFIX)
