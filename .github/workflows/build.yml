@@ -67,7 +67,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Lint and format check
-        run: pnpm run check && pnpm run typecheck
+        run: pnpm --filter ./apps/desktop exec ultracite check && pnpm run typecheck
 
       - name: Verify fork download behavior
         run: pnpm --dir packages/subscriptions-core exec tsx --test ../downloader-core/src/cookie-setup.test.ts ../downloader-core/src/filename-style.test.ts ../../apps/desktop/src/renderer/src/store/video-request-coordinator.test.ts
@@ -133,6 +133,10 @@ jobs:
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: ${{ matrix.build_script }}
+
+      - name: Verify packaged macOS download engines
+        if: matrix.platform == 'macos'
+        run: node apps/desktop/scripts/check-packaged-ytdlp.cjs
 
       - name: Verify packaged sherpa natives
         run: node apps/desktop/scripts/check-packaged-sherpa.cjs ${{ matrix.platform }}

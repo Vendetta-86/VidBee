@@ -1,5 +1,11 @@
 # VidBee Changelog
 
+## v2.3.0-vendetta.1 - 2026-11-08
+
+- Includes compatible updates from upstream v2.3.0, with improvements to startup behavior, subscriptions, Agent workflows, and transcript tools.
+- Keeps Vendetta fixes for YouTube downloads, playlist quality selection, and unbranded filenames.
+- Embedded subtitles no longer leave an extra `.vtt` file beside the video.
+
 ## v2.2.3-vendetta.1 - 2026-10-17
 
 - Includes compatible updates from upstream v2.2.3, including improved Agent workflows, transcription reliability, and media format selection.
@@ -11,6 +17,29 @@ This page only includes user-visible updates and avoids implementation details.
 For full release notes, see [GitHub Releases](https://github.com/nexmoe/VidBee/releases).
 
 ## [Unreleased]
+
+## [v2.3.0](https://github.com/nexmoe/VidBee/releases/tag/v2.3.0) - 2026-10-25
+
+### Improvements
+- Fresh installations now enable launch at login and hide the macOS Dock icon by default; both options remain adjustable in Settings.
+- Make shared transcript and AI answer images more compact by slightly reducing the text scale.
+
+## [v2.2.4](https://github.com/nexmoe/VidBee/releases/tag/v2.2.4) - 2026-10-24
+
+### Added
+- Connect external AI assistants to VidBee through local MCP tools for downloads, subscriptions, transcription, and exports.
+- Continue the same Agent conversation across VidBee Desktop and the browser extension.
+- Download subtitles on their own, without downloading the video.
+- Download AI diagrams as JPG alongside SVG, PNG, and Mermaid source.
+
+### Changed
+- Keep large download and transcript libraries responsive and improve navigation between converted media.
+- Show download titles and covers as soon as items enter the queue.
+- Keep a separate cookie session for each browser profile used by the extension.
+- Render AI diagrams with Pele and consistent controls in light and dark themes.
+
+### Fixed
+- Preserve the complete download engine in Intel macOS packages so managed preparation and bundled fallback can start successfully.
 
 ## [v2.2.3](https://github.com/nexmoe/VidBee/releases/tag/v2.2.3) - 2026-10-11
 
@@ -133,11 +162,40 @@ In 1.x, VidBee saved the file and stopped there. 2.0 keeps going: transcribe on 
 - Downloads and self-hosted setups are more reliable.
 
 ## [v1.3.14](https://github.com/nexmoe/VidBee/releases/tag/v1.3.14) - 2026-07-05
-### Requirement Updates
-- Updated the bundled yt-dlp runtime from v2026.06.09 to v2026.07.04 so site compatibility stays current.
+
+### Improvements
+- Refresh download support for recent changes on supported websites.
+
+## [v1.3.13](https://github.com/nexmoe/VidBee/releases/tag/v1.3.13) - 2026-06-20
+
+### What's New
+- Run VidBee on Windows without installing it, with an option to keep app data and downloads beside the app. (by @jabrailkhalil, [#403](https://github.com/nexmoe/VidBee/pull/403))
+- View live download logs and reopen them from download history.
+
+### Improvements
+- Open playlist options automatically when pasting a playlist or YouTube channel link.
+- Prevent a changed link from downloading the previously selected video.
+- Stop Windows downloads completely when cancelled, and recognize Firefox browser cookies more reliably.
+- Keep Twitch downloads running when optional subtitles are unavailable, and try an available format when the preferred combination is missing.
+- Restore startup of the installed Linux Debian package.
+
+## [v1.3.12](https://github.com/nexmoe/VidBee/releases/tag/v1.3.12) - 2026-06-20
+
+### What's New
+- Choose stable or preview updates from About and keep receiving updates from your selected channel.
+
 ## [v1.3.11](https://github.com/nexmoe/VidBee/releases/tag/v1.3.11) - 2026-06-19
-### Requirement Updates
-- Updated the bundled yt-dlp runtime from v2026.03.17 to v2026.06.09 so site compatibility stays current.
+
+### What's New
+- Choose MP4, MKV, WebM, or the original format for one-click downloads.
+- Press Ctrl+V or Cmd+V to open the add-download dialog with the copied link.
+
+### Improvements
+- Get clearer help when downloads need browser cookies, sign-in, or a working network connection.
+- Keep long downloads and large playlists from crashing the app.
+- Restore startup for affected older 1.3 installations and improve download-tool detection on macOS.
+- Refresh download support for recent changes on supported websites.
+
 ## [v1.3.10](https://github.com/nexmoe/VidBee/releases/tag/v1.3.10) - 2026-04-11
 ### Improvements
 - One-click download is enabled by default so you can start downloads faster on first use.
@@ -175,8 +233,10 @@ In 1.x, VidBee saved the file and stopped there. 2.0 keeps going: transcribe on 
 - Improved download UI details
 
 ## [v1.3.5](https://github.com/nexmoe/VidBee/releases/tag/v1.3.5) - 2026-03-18
-### Requirement Updates
-- Updated the bundled yt-dlp runtime from v2026.03.13 to v2026.03.17 so site compatibility stays current.
+
+### Improvements
+- Refresh download support for recent changes on supported websites.
+
 ## [v1.3.4](https://github.com/nexmoe/VidBee/releases/tag/v1.3.4) - 2026-03-14
 ### Bug Fixes
 - Improved macOS release build reliability by using the default Electron download source during packaging.

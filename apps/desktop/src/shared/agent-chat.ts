@@ -1,3 +1,7 @@
+import type { AgentActivity } from '@vidbee/ui/lib/agent-activity'
+
+export type { AgentActivity } from '@vidbee/ui/lib/agent-activity'
+
 import type { AgentMessage } from '@earendil-works/pi-agent-core'
 import type { AgentErrorCode } from './agent-errors'
 
@@ -88,17 +92,6 @@ export interface AgentChatMessage {
   createdAt: number
   legacy?: boolean
 }
-export type AgentActivity =
-  | { id: string; kind: 'thinking' | 'commentary'; text: string }
-  | { id: string; kind: 'status'; status: 'retrying' | 'compacting' | 'recovering' }
-  | {
-      id: string
-      kind: 'tool'
-      toolId: string
-      name: string
-      count?: number
-      artifactIds: string[]
-    }
 
 export interface AgentContextCheckpoint {
   coveredCount: number
@@ -166,6 +159,8 @@ export interface AgentThread {
   seq: number
   /** User or Agent-chosen tab title; empty means derive from messages. */
   title?: string
+  /** Effort selected for the next message; synchronized between conversation clients. */
+  thinkingLevel?: AgentThinkingLevel
   messages: AgentChatMessage[]
   runs: AgentChatRun[]
   artifacts: AgentArtifact[]
@@ -181,15 +176,64 @@ export interface AgentThreadSummary {
   title: string
   updatedAt: number
   running: boolean
+  /** Latest run: the live one, otherwise the most recently updated. `idle` when none ran. */
+  status?: AgentRunStatus | 'idle'
+  /** Model id of that run; empty until the run resolves its model. `vidbee-cloud` for Cloud. */
+  model?: string
 }
+/**
+ * Entities changed by one streaming commit.
+ * `downloadId` and `promptId` route the patch before the renderer has a thread.
+ */
+export interface AgentThreadPatch {
+  downloadId: string
+  promptId: string
+  threadId: string
+  leafId?: string | null
+  title?: string
+  toolGrants?: string[]
+  images?: AgentImageAttachment[]
+  messages?: AgentChatMessage[]
+  runs?: AgentChatRun[]
+  artifacts?: AgentArtifact[]
+}
+/**
+ * Directory change that is ordered by `revision`, not by the thread seq.
+ * Upserts that do not write a new seq still carry a newer revision.
+ */
+export type AgentCatalogNotice =
+  | {
+      kind: 'upsert'
+      summary: AgentThreadSummary
+      history: boolean
+      runStatus: AgentRunStatus | 'idle'
+      statusUpdatedAt: number
+      revision: number
+    }
+  | {
+      kind: 'remove'
+      id: string
+      downloadId: string
+      revision: number
+    }
 export interface AgentRunEvent {
+  /** Ephemeral live-run categories; omitted from persisted events and history repair. */
+  analytics?: {
+    taskOrigin: 'manual' | 'automatic'
+    providerType: 'cloud' | 'byok' | 'unknown'
+  }
   threadId: string
   runId: string | null
   messageId: string | null
   seq: number
   type: string
   createdAt: number
-  snapshot: AgentThread
+  /** Full public thread for the first load, admission, terminal, and gap repair. */
+  snapshot?: AgentThread
+  /** Hot-path entity update. Mutually exclusive with `snapshot`. */
+  patch?: AgentThreadPatch
+  /** Title, membership, or selected-run status. Independent of snapshot seq. */
+  catalog?: AgentCatalogNotice
 }
 export interface AgentChatInput {
   thinkingLevel?: AgentThinkingLevel

@@ -2,9 +2,11 @@ import type { FilenameStyle } from '@vidbee/downloader-core/filename-style'
 import type { OneClickContainerOption } from '@vidbee/downloader-core/format-preferences'
 import { DEFAULT_SUBTITLE_LANGUAGES } from '@vidbee/downloader-core/subtitle-languages'
 import { defaultLanguageCode, type LanguageCode } from '@vidbee/i18n/languages'
-import type { TaskCreationMetadata, TaskKind } from '@vidbee/task-queue'
+import type { SubscriptionDownloadPreferences } from '@vidbee/subscriptions-core/types'
+import type { DownloadCookieSource, TaskCreationMetadata, TaskKind } from '@vidbee/task-queue'
 import type { AsrTierId } from '@vidbee/transcription/asr'
 import type { DownloadMirror } from '@vidbee/transcription/download-mirrors'
+import type { ExtensionCookieSourcePreference } from '../extension-cookies'
 
 export type {
   YtDlpKernelPreparationStep,
@@ -71,6 +73,7 @@ export type DownloadStatus =
   | 'cancelled'
 
 export interface DownloadItem {
+  cookieSources?: DownloadCookieSource[]
   id: string
   url: string
   title: string
@@ -142,6 +145,7 @@ export interface SubscriptionFeedItem {
 }
 
 export interface DownloadHistoryItem {
+  cookieSources?: DownloadCookieSource[]
   id: string
   url: string
   title: string
@@ -272,7 +276,7 @@ export type SubscriptionStatus = 'idle' | 'checking' | 'up-to-date' | 'failed'
 
 export const SUBSCRIPTION_DUPLICATE_FEED_ERROR = 'SUBSCRIPTION_DUPLICATE_FEED_URL'
 
-export interface SubscriptionRule {
+export interface SubscriptionRule extends SubscriptionDownloadPreferences {
   id: string
   title: string
   sourceUrl: string
@@ -304,7 +308,7 @@ export interface SubscriptionResolvedFeed {
   platform: SubscriptionPlatform
 }
 
-export interface SubscriptionCreatePayload {
+export interface SubscriptionCreatePayload extends SubscriptionDownloadPreferences {
   sourceUrl: string
   feedUrl: string
   platform: SubscriptionPlatform
@@ -317,7 +321,7 @@ export interface SubscriptionCreatePayload {
   enabled?: boolean
 }
 
-export interface SubscriptionUpdatePayload {
+export interface SubscriptionUpdatePayload extends SubscriptionDownloadPreferences {
   title?: string
   sourceUrl?: string
   feedUrl?: string
@@ -341,6 +345,8 @@ export interface AppSettings {
   downloadWithoutChannelSubfolders: boolean
   browserForCookies: string
   cookiesPath: string
+  /** Remember extension profiles in cookie priority order, including offline sources. */
+  extensionCookieSources: ExtensionCookieSourcePreference[]
   proxy: string
   configPath: string
   language: LanguageCode
@@ -386,6 +392,7 @@ export const defaultSettings: AppSettings = {
   downloadWithoutChannelSubfolders: false,
   browserForCookies: 'none',
   cookiesPath: '',
+  extensionCookieSources: [],
   proxy: '',
   configPath: '',
   language: defaultLanguageCode,

@@ -67,3 +67,25 @@ test('cookie-free recovery cannot regain cookies during download or metadata pre
     assert.equal(args.includes('--cookies-from-browser'), false)
   }
 })
+
+test('embedded subtitles do not leave a separate subtitle file', () => {
+  const args = buildDownloadArgs(
+    { url: 'https://youtu.be/RIGlCZJR2JQ', type: 'video' },
+    'downloads',
+    { downloadSubtitles: true, embedSubs: true }
+  )
+
+  assert.equal(args.includes('--embed-subs'), true)
+  assert.equal(args.includes('--write-subs'), false)
+})
+
+test('subtitles remain downloadable as separate files when embedding is disabled', () => {
+  const args = buildDownloadArgs(
+    { url: 'https://youtu.be/RIGlCZJR2JQ', type: 'video' },
+    'downloads',
+    { downloadSubtitles: true, embedSubs: false }
+  )
+
+  assert.equal(args.includes('--embed-subs'), false)
+  assert.equal(args.includes('--write-subs'), true)
+})

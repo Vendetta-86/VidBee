@@ -11,18 +11,19 @@ import {
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Response } from '@renderer/components/ui/response'
+import { Switch } from '@renderer/components/ui/switch'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { usePromptRun } from '@renderer/hooks/use-prompt-run'
-import { cn } from '@renderer/lib/utils'
 import { AI_PROMPT_SAMPLE_TRANSCRIPT, resolveAiPromptContent } from '@shared/ai-prompts'
 import { isThinkingSameAsAnswer } from '@shared/ai-thinking'
-import type { AiPrompt, AiPromptIconId, AiPromptWriteInput } from '@shared/ai-types'
+import {
+  AI_PROMPT_TEST_DOWNLOAD_ID,
+  type AiPrompt,
+  type AiPromptWriteInput
+} from '@shared/ai-types'
 import { Square } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AI_PROMPT_ICON_IDS, AiPromptIcon } from './ai-prompt-icon'
-
-const SETTINGS_TEST_DOWNLOAD_ID = '__settings-prompt-test__'
 
 interface AiPromptDialogProps {
   onDelete?: () => Promise<void>
@@ -49,11 +50,11 @@ export function AiPromptDialog({
   const bodyId = useId()
   const sampleId = useId()
   const [title, setTitle] = useState('')
-  const [icon, setIcon] = useState<AiPromptIconId>('sparkles')
   const [content, setContent] = useState('')
+  const [autoRun, setAutoRun] = useState(false)
   const [sample, setSample] = useState(AI_PROMPT_SAMPLE_TRANSCRIPT)
   const testPromptId = prompt?.id ?? null
-  const { run, start, stop } = usePromptRun(SETTINGS_TEST_DOWNLOAD_ID, open ? testPromptId : null)
+  const { run, start, stop } = usePromptRun(AI_PROMPT_TEST_DOWNLOAD_ID, open ? testPromptId : null)
   const running = run.status === 'running'
   const thinking = run.thinking?.trim() ?? ''
   const showThinking =
@@ -63,8 +64,8 @@ export function AiPromptDialog({
       return
     }
     setTitle(prompt?.title ?? '')
-    setIcon(prompt?.icon ?? 'sparkles')
     setContent(prompt ? resolveAiPromptContent(prompt.content, i18n.language) : '')
+    setAutoRun(prompt?.autoRun ?? false)
     setSample(AI_PROMPT_SAMPLE_TRANSCRIPT)
   }, [i18n.language, open, prompt])
 
@@ -77,9 +78,9 @@ export function AiPromptDialog({
     const input: AiPromptWriteInput = {
       id: prompt?.id,
       title: title.trim(),
-      icon,
       content: content.trim(),
-      enabled: prompt?.enabled
+      enabled: prompt?.enabled,
+      autoRun
     }
     await onSave(input)
     return input
@@ -114,36 +115,15 @@ export function AiPromptDialog({
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-2xl">
+        <DialogHeader className="shrink-0">
           <DialogTitle>
             {prompt ? t('settings.ai.editPrompt') : t('settings.ai.addPrompt')}
           </DialogTitle>
           <DialogDescription>{t('settings.ai.promptDialogDescription')}</DialogDescription>
         </DialogHeader>
-        <div className="grid gap-4">
-          <div className="grid gap-2">
-            <Label>{t('settings.ai.promptIcon')}</Label>
-            <div className="flex flex-wrap gap-1.5">
-              {AI_PROMPT_ICON_IDS.map((id) => (
-                <button
-                  aria-label={id}
-                  className={cn(
-                    'inline-flex size-9 cursor-pointer items-center justify-center rounded-lg border transition-colors duration-200',
-                    icon === id
-                      ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-transparent bg-muted text-muted-foreground hover:text-foreground'
-                  )}
-                  key={id}
-                  onClick={() => setIcon(id)}
-                  type="button"
-                >
-                  <AiPromptIcon icon={id} />
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="grid gap-2">
+        <div className="grid min-h-0 w-full min-w-0 gap-4 overflow-y-auto overflow-x-hidden">
+          <div className="grid min-w-0 gap-2">
             <Label htmlFor={titleId}>{t('settings.ai.promptTitle')}</Label>
             <Input
               id={titleId}
@@ -151,7 +131,7 @@ export function AiPromptDialog({
               value={title}
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid min-w-0 gap-2">
             <Label htmlFor={bodyId}>{t('settings.ai.promptBody')}</Label>
             <Textarea
               className="min-h-32"
@@ -160,8 +140,19 @@ export function AiPromptDialog({
               value={content}
             />
           </div>
+          <div className="rounded-md border bg-muted/20 p-4">
+            <Switch
+              checked={autoRun}
+              className="flex-row-reverse justify-between gap-4 px-0 py-0 [&>span]:font-medium [&>span]:text-foreground"
+              label={t('settings.ai.promptAutoRun')}
+              onToggle={() => setAutoRun((current) => !current)}
+            />
+            <p className="mt-1 pr-12 text-muted-foreground text-sm leading-relaxed">
+              {t('settings.ai.promptAutoRunDescription')}
+            </p>
+          </div>
           {prompt ? (
-            <div className="grid gap-2 rounded-xl border bg-muted/30 p-4">
+            <div className="grid gap-2 rounded-md border bg-muted/30 p-4">
               <Label htmlFor={sampleId}>{t('settings.ai.testTitle')}</Label>
               <Input
                 id={sampleId}
@@ -175,7 +166,7 @@ export function AiPromptDialog({
                   {running ? t('settings.ai.testStop') : t('settings.ai.testRun')}
                 </Button>
               </div>
-              <div className="min-h-32 rounded-lg border bg-background p-3 text-sm">
+              <div className="min-h-32 rounded-md border bg-background p-3 text-sm">
                 {showThinking || run.text ? (
                   <div className="flex flex-col gap-3">
                     {showThinking ? (
@@ -195,7 +186,7 @@ export function AiPromptDialog({
             </div>
           ) : null}
         </div>
-        <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between">
+        <DialogFooter className="shrink-0 flex-col gap-2 border-t pt-4 sm:flex-row sm:justify-between">
           {prompt && onDelete ? (
             <Button
               className="text-destructive"

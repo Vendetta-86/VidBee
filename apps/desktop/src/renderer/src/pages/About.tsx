@@ -56,7 +56,8 @@ export function About() {
   const [updateAvailableState] = useAtom(updateAvailableAtom)
   const setUpdateAvailable = useSetAtom(updateAvailableAtom)
   const kernelStatus = useAtomValue(ytdlpKernelStatusAtom)
-  const { appVersion, osVersion } = useAppInfo()
+  const appInfo = useAppInfo()
+  const { appVersion } = appInfo
   const appVersionLabel = appVersion || '—'
   const [latestVersionState, setLatestVersionState] = useState<LatestVersionState>(null)
   const [updateDownloadProgress, setUpdateDownloadProgress] = useState<number | null>(null)
@@ -439,7 +440,7 @@ export function About() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <FeedbackLinkButtons
-                    appInfo={{ appVersion, osVersion }}
+                    appInfo={appInfo}
                     buttonClassName="gap-2"
                     iconClassName="h-4 w-4"
                     useSimpleGithubUrl={true}

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { safeStorage } from 'electron'
+import { BrowserWindow, safeStorage } from 'electron'
 import {
   AGENT_THINKING_LEVELS,
   type AgentThinkingLevel,
@@ -18,7 +18,6 @@ import {
 } from '../../shared/ai-prompts'
 import type {
   AiPrompt,
-  AiPromptIconId,
   AiPromptWriteInput,
   AiProviderConfig,
   AiProviderPresetId,
@@ -69,29 +68,6 @@ const PRESET_NAMES: Record<AiProviderPresetId, string> = {
   xai: 'xAI',
   zhipu: 'Zhipu'
 }
-
-const PROMPT_ICONS = new Set<AiPromptIconId>([
-  'list',
-  'spell-check',
-  'rows-3',
-  'highlighter',
-  'circle-help',
-  'smile',
-  'message-circle-question',
-  'chart-no-axes-column',
-  'repeat-2',
-  'git-branch',
-  'languages',
-  'sparkles'
-])
-
-/**
- * True when a stored icon name is one of the supported Lucide ids.
- *
- * @param value Unknown icon from disk or the renderer.
- */
-const isPromptIcon = (value: string): value is AiPromptIconId =>
-  PROMPT_ICONS.has(value as AiPromptIconId)
 
 /**
  * Persist selected effort levels, dropping unknown names.
@@ -171,10 +147,22 @@ class AiStore {
       } satisfies StoredAiState
     })
     this.ensurePrompts()
+    this.store.onDidAnyChange(() => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) {
+          window.webContents.send('ai:settings-changed')
+        }
+      }
+    })
+  }
+
+  /** Observe settings revisions without exposing credentials to any transport. */
+  subscribe(listener: () => void): () => void {
+    return this.store.onDidAnyChange(listener)
   }
 
   /**
-   * Re-insert missing built-in prompts and drop retired preset ids.
+   * Re-insert missing built-in prompts and drop retired fields and preset ids.
    */
   private ensurePrompts(): void {
     const stored = this.readState()
@@ -395,9 +383,6 @@ class AiStore {
     if (!(title && content)) {
       throw new Error('Prompt title and body are required')
     }
-    if (!isPromptIcon(input.icon)) {
-      throw new Error('Unknown prompt icon')
-    }
     const state = this.readState()
     const now = Date.now()
     const existing = input.id ? state.prompts.find((prompt) => prompt.id === input.id) : undefined
@@ -405,9 +390,9 @@ class AiStore {
     const record: AiPrompt = {
       id: existing?.id ?? randomUUID(),
       title,
-      icon: input.icon,
       content: existing?.isPreset ? canonicalizeAiPromptContent(existing.id, content) : content,
       enabled: input.enabled ?? existing?.enabled ?? true,
+      autoRun: input.autoRun ?? existing?.autoRun ?? false,
       isPreset: existing?.isPreset ?? false,
       sortOrder: existing?.sortOrder ?? nextSort,
       createdAt: existing?.createdAt ?? now,

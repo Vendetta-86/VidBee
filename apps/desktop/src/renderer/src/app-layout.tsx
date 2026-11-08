@@ -6,6 +6,7 @@ import { Sidebar } from '@renderer/components/ui/sidebar'
 import { Toaster } from '@renderer/components/ui/sonner'
 import { TitleBar } from '@renderer/components/ui/title-bar'
 import { WhatsNewHost } from '@renderer/components/whats-new/WhatsNewDialog'
+import { APP_ICON_SHOW_HOME_CHANNEL } from '@shared/app-icon-menu'
 import type { SubscriptionRule } from '@shared/types'
 import { Outlet, useNavigate, useRouteContext, useRouterState } from '@tanstack/react-router'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
@@ -22,12 +23,13 @@ import {
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { DesktopChromeContext } from './desktop-chrome'
+import { useAgentTaskEvents } from './hooks/use-agent-task-events'
 import { useAppIconPlaybackMenu } from './hooks/use-app-icon-playback-menu'
+import { useDesktopValueEvents } from './hooks/use-desktop-value-events'
 import { useDownloadEvents } from './hooks/use-download-events'
 import { useHistorySync } from './hooks/use-history-sync'
 import { useImportLocalMedia } from './hooks/use-import-local-media'
-import { useRybbitDailyClientVersion } from './hooks/use-rybbit-daily-client-version'
-import { useRybbitScript } from './hooks/use-rybbit-script'
+import { syncDesktopAnalytics } from './lib/desktop-analytics'
 import { addRendererBreadcrumb, setRendererTelemetryEnabled } from './lib/glitchtip'
 import { ipcEvents, ipcServices } from './lib/ipc'
 import { logger } from './lib/logger'
@@ -41,7 +43,7 @@ import {
   shouldShowPlaybackBar
 } from './lib/transcript-playback'
 import { withDesktopUtm } from './lib/url'
-import { loadSettingsAtom, settingsAtom } from './store/settings'
+import { loadSettingsAtom, settingsAtom, settingsLoadedAtom } from './store/settings'
 import { loadSubscriptionsAtom, setSubscriptionsAtom } from './store/subscriptions'
 import { playbackSessionAtom } from './store/transcript-playback'
 import { playbackPlaylistAtom } from './store/transcript-playlist'
@@ -106,6 +108,7 @@ export function AppLayout() {
   const loadSubscriptions = useSetAtom(loadSubscriptionsAtom)
   const setSubscriptions = useSetAtom(setSubscriptionsAtom)
   const [settings] = useAtom(settingsAtom)
+  const settingsLoaded = useAtomValue(settingsLoadedAtom)
   const loadSettings = useSetAtom(loadSettingsAtom)
   const { setTheme } = useTheme()
   const loadTranscripts = useSetAtom(loadTranscriptMapAtom)
@@ -122,6 +125,8 @@ export function AppLayout() {
   const updateDownloadInProgressRef = useRef(false)
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const pathnameRef = useRef(pathname)
+  pathnameRef.current = pathname
   const playbackSession = useAtomValue(playbackSessionAtom)
   const playbackPlaylist = useAtomValue(playbackPlaylistAtom)
   const playbackBarVisible = shouldShowPlaybackBar({
@@ -137,20 +142,14 @@ export function AppLayout() {
   const currentPage = pathToPage(pathname)
   const supportedSitesUrl = withDesktopUtm('https://vidbee.org/supported-sites/')
   const toolsUrl = withDesktopUtm('https://vidbee.org/tools/')
-  const analyticsEnabled = settings.enableAnalytics ?? true
-  const isRybbitReady = useRybbitScript(analyticsEnabled)
+  const analyticsEnabled = settingsLoaded && settings.enableAnalytics !== false
 
   useDownloadEvents()
+  useDesktopValueEvents()
+  useAgentTaskEvents()
   useAppIconPlaybackMenu()
   useHistorySync()
   const { applyImportResult } = useImportLocalMedia()
-  useRybbitDailyClientVersion({
-    appName: 'VidBee',
-    enabled: analyticsEnabled,
-    isReady: isRybbitReady,
-    platform,
-    version: appVersion
-  })
 
   const handlePageChange = useCallback(
     (page: Page) => {
@@ -170,6 +169,18 @@ export function AppLayout() {
     void navigate({ search: { tab: 'cookies' }, to: '/settings' })
   }, [navigate])
 
+  useEffect(() => {
+    const unsubscribe = ipcEvents.on(APP_ICON_SHOW_HOME_CHANNEL, () => {
+      if (normalizePathname(pathnameRef.current) === '/') {
+        return
+      }
+      void navigate({ to: '/' })
+    })
+    return () => {
+      ipcEvents.removeListener(APP_ICON_SHOW_HOME_CHANNEL, unsubscribe)
+    }
+  }, [navigate])
+
   const handleOpenSupportedSites = useCallback(() => {
     window.open(supportedSitesUrl, '_blank')
   }, [supportedSitesUrl])
@@ -181,6 +192,12 @@ export function AppLayout() {
   useEffect(() => {
     setRendererTelemetryEnabled(analyticsEnabled)
   }, [analyticsEnabled])
+
+  useEffect(() => {
+    if (settingsLoaded) {
+      void syncDesktopAnalytics(analyticsEnabled, pathname)
+    }
+  }, [analyticsEnabled, pathname, settingsLoaded])
 
   useEffect(() => {
     setTheme(settings.theme)
