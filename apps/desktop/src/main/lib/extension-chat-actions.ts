@@ -4,6 +4,7 @@ import { selectedAgentMessages } from '../../shared/agent-chat'
 import { exportFileName } from '../../shared/agent-export'
 import { isUuid } from '../../shared/agent-history'
 import { artifactsForMessage } from '../../shared/agent-markdown'
+import { aiPromptLabel } from '../../shared/ai-prompts'
 import type { ExtensionChatExport, ExtensionChatFile } from '../../shared/extension-chat'
 import { sharePromptUserText } from '../../shared/types/share-card'
 import { attachAgentImages } from './agent-chat-runner'
@@ -12,6 +13,7 @@ import { getAgentComposerOptions, selectAgentComposerModel } from './agent-compo
 import { importAgentImageData } from './agent-image-attachments'
 import { aiStore } from './ai-store'
 import { dislikeCloudResult } from './cloud-device'
+import { readExtensionChatTasks, readExtensionChatVideos } from './extension-chat-cards'
 import { historyManager } from './history-manager'
 import { markdownWithEmbeddedImages, renderMarkdownPdf } from './markdown-export'
 import { withVidBeeExportAttribution, withVideoSourceLink } from './markdown-pdf'
@@ -74,10 +76,10 @@ export async function exportExtensionChatReply(
   const task = peekDesktopTaskQueueRef()?.get(thread.downloadId)
   const history = historyManager.getHistory().find((item) => item.id === thread.downloadId)
   const title = task?.input.title ?? history?.title ?? 'VidBee'
-  const prompt = aiStore.getSnapshot().prompts.find((item) => item.id === thread.promptId)
-  const promptTitle = prompt?.isPreset
-    ? translate(`settings.ai.presetPrompts.${prompt.id}.title`)
-    : (prompt?.title ?? translate('transcript.promptHistoryChat'))
+  const prompt = aiStore.getSnapshot().prompts.find((item) => item.name === thread.promptId)
+  const promptTitle = prompt
+    ? aiPromptLabel(prompt, translate)
+    : translate('transcript.promptHistoryChat')
   const artifacts = artifactsForMessage(
     thread.artifacts,
     message.text,
@@ -99,7 +101,7 @@ export async function exportExtensionChatReply(
       coverSrc: task?.input.thumbnail ?? history?.thumbnail,
       tagline: translate('transcript.promptShareTagline'),
       thinkingLabel,
-      userText: sharePromptUserText(thread.messages, message.id, promptTitle, prompt?.title),
+      userText: sharePromptUserText(thread.messages, message.id, promptTitle, prompt?.name),
       artifacts,
       runId: message.runId ?? undefined
     }
@@ -150,6 +152,12 @@ export async function executeExtensionChatAction(
     throw new Error('Invalid chat action')
   }
   const input = value as Record<string, unknown>
+  if (action === 'tasks') {
+    return readExtensionChatTasks(input)
+  }
+  if (action === 'videos') {
+    return readExtensionChatVideos(input)
+  }
   if (action === 'model') {
     if (typeof input.value !== 'string' || input.value.length > 256) {
       throw new Error('Invalid model')

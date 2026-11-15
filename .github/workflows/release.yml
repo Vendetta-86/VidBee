@@ -56,7 +56,7 @@ jobs:
           path: dist/
 
       - name: Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3.0.3
         with:
           body: |
             View the full changelog at [vidbee.org/changelog](https://vidbee.org/changelog/).

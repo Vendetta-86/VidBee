@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { DownloadCookieSource } from '@vidbee/task-queue'
 import { parseBrowserCookiesSetting } from './browser-cookies-setting'
 import {
   applyViaVidBeeFilename,
@@ -10,6 +11,7 @@ import {
 } from './filename-style'
 import type { OneClickContainerOption } from './format-preferences'
 import { expandSubtitleLanguageAliases, resolveSubtitleLanguages } from './subtitle-languages'
+import type { DownloadRuntimeSettings } from './types'
 
 export interface YtDlpDownloadSettings {
   skipCookieAuth?: boolean
@@ -874,4 +876,44 @@ export const buildPlaylistInfoArgs = (
 
   args.push(url)
   return args
+}
+
+/** Capture explicit cookie sources from the executed arguments without retaining credentials. */
+export function cookieSourcesFromArgs(
+  args: readonly string[],
+  settings: DownloadRuntimeSettings
+): DownloadCookieSource[] {
+  let browser: string | undefined
+  let cookieFile: string | undefined
+  let hasConfig = false
+  const argumentsIterator = args.values()
+  for (const argument of argumentsIterator) {
+    const [flag, inlineValue] = argument.split(/[=](.*)/s)
+    if (flag === '--cookies-from-browser') {
+      browser = inlineValue ?? argumentsIterator.next().value
+    } else if (flag === '--cookies') {
+      cookieFile = inlineValue ?? argumentsIterator.next().value
+    } else if (flag === '--no-cookies-from-browser') {
+      browser = undefined
+    } else if (flag === '--no-cookies') {
+      cookieFile = undefined
+    } else if (flag === '--config-location' || flag === '--config-locations') {
+      hasConfig = true
+    }
+  }
+  const sources: DownloadCookieSource[] = []
+  if (browser) {
+    sources.push({ type: 'browser', browser: browser.split(/[:+]/, 1)[0] })
+  }
+  if (cookieFile) {
+    sources.push(
+      cookieFile === settings.cookiesPath && settings.cookieSource
+        ? { ...settings.cookieSource }
+        : { type: 'file' }
+    )
+  }
+  if (hasConfig || !args.includes('--ignore-config')) {
+    sources.push({ type: 'config' })
+  }
+  return sources
 }

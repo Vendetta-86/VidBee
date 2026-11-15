@@ -1,5 +1,11 @@
 # VidBee Changelog
 
+## v2.4.0-vendetta.1 - 2026-11-15
+
+- Includes compatible upstream v2.4.0 updates for Agent conversations, subtitle translation, bilingual captions, and video dubbing.
+- Preserves Vendetta's YouTube download fixes, playlist quality selection, cookie recovery, and unbranded filenames.
+- Embedded subtitles no longer leave a separate `.vtt` file beside the video.
+
 ## v2.3.0-vendetta.1 - 2026-11-08
 
 - Includes compatible updates from upstream v2.3.0, with improvements to startup behavior, subscriptions, Agent workflows, and transcript tools.
@@ -17,6 +23,21 @@ This page only includes user-visible updates and avoids implementation details.
 For full release notes, see [GitHub Releases](https://github.com/nexmoe/VidBee/releases).
 
 ## [Unreleased]
+
+## [v2.4.0](https://github.com/nexmoe/VidBee/releases/tag/v2.4.0) - 2026-11-14
+
+### What's New
+- Start an independent Agent conversation, attach videos from your library, and continue working across downloads, subtitles, and exports.
+- Follow long requests with a concise plan, live task progress, and generated media in one place. Agent continues automatically when background tasks finish.
+- Translate subtitles, export bilingual subtitles, and create locally dubbed videos from the same conversation.
+- Choose Cloud transcription alongside local models and resume interrupted transcription without repeating completed audio.
+- Install skills from GitHub, organize your skill library, and mention a skill directly in a message.
+- Install VidBee from the Microsoft Store, with updates managed by the Store.
+
+### Improvements
+- Select multiple library items with the keyboard or by dragging, then manage them together.
+- Open local files linked in Agent answers and keep your preferred window position between launches.
+- VidBee takes less space to install.
 
 ## [v2.3.0](https://github.com/nexmoe/VidBee/releases/tag/v2.3.0) - 2026-10-25
 

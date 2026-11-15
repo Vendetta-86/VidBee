@@ -2,9 +2,14 @@ import { randomBytes } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { extname } from 'node:path'
-import { AGENT_MAX_MESSAGE_IMAGES, AGENT_THINKING_LEVELS } from '../../shared/agent-chat'
+import {
+  AGENT_MAX_MESSAGE_IMAGES,
+  AGENT_THINKING_LEVELS,
+  AGENT_WORKSPACE_ID
+} from '../../shared/agent-chat'
 import { isUuid } from '../../shared/agent-history'
 import { selectedAgentRunView } from '../../shared/agent-thread-patch'
+import { agentUiResponseSchema } from '../../shared/agent-ui'
 import { AI_CHAT_PROMPT_ID } from '../../shared/ai-prompts'
 import type { ExtensionChatCommand, ExtensionChatState } from '../../shared/extension-chat'
 import { resolveAgentArtifact } from './agent-artifacts'
@@ -103,6 +108,8 @@ function validCommand(value: unknown): value is ExtensionChatCommand {
         (Array.isArray(command.imageIds) &&
           command.imageIds.length <= AGENT_MAX_MESSAGE_IMAGES &&
           command.imageIds.every((id) => typeof id === 'string' && isUuid(id)))) &&
+      (command.uiResponse === undefined ||
+        agentUiResponseSchema.safeParse(command.uiResponse).success) &&
       (command.thinkingLevel === undefined ||
         AGENT_THINKING_LEVELS.some((level) => level === command.thinkingLevel))
     )
@@ -143,7 +150,7 @@ function state(session: ChatSession): ExtensionChatState {
     session.threadId = undefined
   }
   const threads = listAgentConversations(session.downloadId)
-  const history = listAgentConversations()
+  const history = listAgentConversations().filter((item) => item.downloadId !== AGENT_WORKSPACE_ID)
   const sources = Object.fromEntries(
     [...new Set([session.downloadId, ...history.map((item) => item.downloadId)])].flatMap((id) => {
       const source = extensionChatVideo(id)
@@ -152,9 +159,9 @@ function state(session: ChatSession): ExtensionChatState {
   )
   const statuses = Object.fromEntries(
     aiStore.getSnapshot().prompts.map((prompt) => [
-      prompt.id,
+      prompt.name,
       (() => {
-        const stored = getAgentChatStore().loadPromptThreadView(session.downloadId, prompt.id)
+        const stored = getAgentChatStore().loadPromptThreadView(session.downloadId, prompt.name)
         return stored ? selectedAgentRunView(stored) : { status: 'idle' as const, updatedAt: 0 }
       })()
     ])
@@ -163,7 +170,9 @@ function state(session: ChatSession): ExtensionChatState {
     revision: getAgentCatalogRevision(),
     catalog: {
       downloadId: session.downloadId,
-      prompts: aiStore.getSnapshot().prompts,
+      prompts: aiStore
+        .getSnapshot()
+        .prompts.filter((prompt) => !(prompt.workflowOnly || prompt.skillError)),
       threads,
       history,
       sources,
@@ -194,6 +203,7 @@ async function execute(session: ChatSession, command: ExtensionChatCommand): Pro
         retryMessageId: command.retryMessageId,
         thinkingLevel: command.thinkingLevel,
         imageIds: command.imageIds,
+        uiResponse: command.uiResponse,
         uiLanguage: 'en'
       }).id
     })
@@ -205,7 +215,7 @@ async function execute(session: ChatSession, command: ExtensionChatCommand): Pro
       command.promptId !== AI_CHAT_PROMPT_ID &&
       !aiStore
         .getSnapshot()
-        .prompts.some((prompt) => prompt.id === command.promptId && prompt.enabled)
+        .prompts.some((prompt) => prompt.name === command.promptId && !prompt.skillError)
     ) {
       throw new Error('Skill is no longer available')
     }
@@ -366,7 +376,7 @@ export async function handleExtensionChat(
     }
     if (
       parts.length === 2 &&
-      ['model', 'images', 'export', 'feedback'].includes(parts[1]) &&
+      ['model', 'images', 'export', 'feedback', 'tasks', 'videos'].includes(parts[1]) &&
       req.method === 'POST'
     ) {
       const action = parts[1]
@@ -382,7 +392,10 @@ export async function handleExtensionChat(
       }
       try {
         const result = await executeExtensionChatAction(action, input, abort.signal)
-        replyExtensionJson(res, 200, { result, state: state(session) })
+        replyExtensionJson(res, 200, {
+          result,
+          ...(action === 'tasks' || action === 'videos' ? {} : { state: state(session) })
+        })
       } finally {
         if (action === 'export') {
           session.exporting = false
